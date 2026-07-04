@@ -41,10 +41,9 @@ def select_inputs(
     if not region or not tenancy_id:
         raise ValueError("preflight requires deployment region and tenancy OCID")
 
-    preferred = str(inputs.get("preferred_vm_shape") or E5_SHAPE)
-    candidates = _candidate_shapes(preferred)
-    ocpus = float(inputs.get("vm_ocpus", 1))
-    memory = float(inputs.get("vm_memory_gbs", 8))
+    candidates = _candidate_shapes(E5_SHAPE)
+    ocpus = 2.0
+    memory = 16.0
     ad_index = int(inputs.get("availability_domain_index", 0))
 
     regional_config = dict(sdk_config)

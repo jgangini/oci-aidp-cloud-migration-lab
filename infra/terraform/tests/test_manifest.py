@@ -17,18 +17,17 @@ def test_deploy_studio_manifest_contract() -> None:
     assert manifest["post_apply"]["timeout_seconds"] == 3600
     assert (root / manifest["post_apply"]["entrypoint"]).is_file()
     fields = {field["name"]: field for field in manifest["form"]["fields"]}
-    assert fields["home_region"]["required"] is False
-    assert fields["home_region"]["default"] == ""
-    assert fields["home_region"]["pattern"] == "^[a-z]{2}-[a-z0-9-]+-[0-9]+$"
+    assert "home_region" not in fields
+    assert "preferred_vm_shape" not in fields
+    assert "vm_ocpus" not in fields
+    assert "vm_memory_gbs" not in fields
     assert fields["admin_password"]["transform"] == "pbkdf2_sha256"
     assert fields["registration_code"]["pattern"] == "^[A-Z]{4}-[0-9]{4}$"
     assert fields["registration_code"]["transform"] == "uppercase_pbkdf2_sha256"
-    assert manifest["preflight"] == {
-        "entrypoint": "infra/terraform/preflight.py",
-        "timeout_seconds": 60,
-        "requires_oci_credentials": True,
-        "output_inputs": ["home_region", "preferred_vm_shape"],
-    }
+    assert manifest["presentation"]["title"] == "OCI AIDP Cloud Migration Lab"
+    assert manifest["presentation"]["tags"] == ["AIDP Workbench", "Medallion Storage", "Identity Domains", "Object Storage", "HTTPS VM"]
+    assert [field["name"] for field in manifest["preflight"]["runtime_fields"]] == ["home_region", "preferred_vm_shape"]
+    assert manifest["preflight"]["output_inputs"] == ["home_region", "preferred_vm_shape"]
     assert (root / manifest["preflight"]["entrypoint"]).is_file()
 
 

@@ -69,7 +69,7 @@ variable "registration_code_hash" {
 }
 
 variable "preferred_vm_shape" {
-  description = "Explicit flexible VM shape for this APPLY. Retry a capacity failure with E4 through the deploy orchestrator."
+  description = "Server-selected E5/E4 Flex shape from the trusted capacity preflight."
   type        = string
   default     = "VM.Standard.E5.Flex"
   validation {
@@ -79,9 +79,9 @@ variable "preferred_vm_shape" {
 }
 
 variable "vm_ocpus" {
-  description = "Flexible VM OCPUs."
+  description = "Select AI Analyzer standard flexible VM OCPUs."
   type        = number
-  default     = 1
+  default     = 2
   validation {
     condition     = var.vm_ocpus >= 1 && var.vm_ocpus <= 16
     error_message = "vm_ocpus must be between 1 and 16."
@@ -89,9 +89,9 @@ variable "vm_ocpus" {
 }
 
 variable "vm_memory_gbs" {
-  description = "Flexible VM memory in GB."
+  description = "Select AI Analyzer standard flexible VM memory."
   type        = number
-  default     = 8
+  default     = 16
   validation {
     condition     = var.vm_memory_gbs >= 8 && var.vm_memory_gbs <= 256
     error_message = "vm_memory_gbs must be between 8 and 256."

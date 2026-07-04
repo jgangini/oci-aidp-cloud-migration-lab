@@ -50,16 +50,12 @@ class Compute:
         )
 
 
-def _select(statuses: dict[str, tuple[str, str]], preferred: str = preflight.E5_SHAPE) -> tuple[dict[str, Any], Compute]:
+def _select(statuses: dict[str, tuple[str, str]]) -> tuple[dict[str, Any], Compute]:
     compute = Compute(statuses)
     result = preflight.select_inputs(
         {
             "region": "us-chicago-1",
-            "inputs": {
-                "preferred_vm_shape": preferred,
-                "vm_ocpus": 1,
-                "vm_memory_gbs": 8,
-            },
+            "inputs": {},
         },
         {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
         identity_factory=lambda _config: Identity(),
@@ -78,8 +74,8 @@ def test_preflight_selects_e5_and_discovers_home_region() -> None:
     assert compute.details.compartment_id == "ocid1.tenancy.oc1..test"
     assert compute.details.availability_domain == "AD-1"
     assert [item.instance_shape for item in compute.details.shape_availabilities] == list(preflight.SUPPORTED_SHAPES)
-    assert compute.details.shape_availabilities[0].instance_shape_config.ocpus == 1
-    assert compute.details.shape_availabilities[0].instance_shape_config.memory_in_gbs == 8
+    assert compute.details.shape_availabilities[0].instance_shape_config.ocpus == 2
+    assert compute.details.shape_availabilities[0].instance_shape_config.memory_in_gbs == 16
 
 
 def test_preflight_selects_e4_when_e5_is_not_available() -> None:
@@ -93,9 +89,9 @@ def test_preflight_selects_e4_when_e5_is_not_available() -> None:
     assert result["inputs"]["preferred_vm_shape"] == preflight.E4_SHAPE
 
 
-def test_explicit_e4_does_not_silently_upgrade() -> None:
+def test_preflight_falls_back_to_e4_without_user_shape_input() -> None:
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
-    result, compute = _select({preflight.E4_SHAPE: (available, "1")}, preferred=preflight.E4_SHAPE)
+    result, compute = _select({preflight.E4_SHAPE: (available, "1")})
     assert result["inputs"]["preferred_vm_shape"] == preflight.E4_SHAPE
     assert [item.instance_shape for item in compute.details.shape_availabilities] == list(preflight.SUPPORTED_SHAPES)
 

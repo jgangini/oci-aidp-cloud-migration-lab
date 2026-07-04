@@ -10,18 +10,16 @@
     "requires_genai_region": false,
     "database_profile": "none"
   },
+  "presentation": {
+    "title": "OCI AIDP Cloud Migration Lab",
+    "summary": "Deploys an OCI AI Data Platform laboratory with AIDP Workbench, one governed aidp-data bucket, Landing/Bronze/Silver/Gold prefixes, Identity Domains developer groups and a self-service HTTPS registration VM.",
+    "tags": ["AIDP Workbench", "Medallion Storage", "Identity Domains", "Object Storage", "HTTPS VM"],
+    "image": "/assets/blueprints/ai-data-platform-workbench-medallion-ba3242d5.png",
+    "image_alt": "OCI AI Data Platform Workbench medallion architecture",
+    "href": "https://github.com/jgangini/oci-aidp-cloud-migration-lab"
+  },
   "form": {
     "fields": [
-      {
-        "name": "home_region",
-        "label": "OCI tenancy home region",
-        "type": "text",
-        "required": false,
-        "default": "",
-        "pattern": "^[a-z]{2}-[a-z0-9-]+-[0-9]+$",
-        "min_length": 8,
-        "max_length": 64
-      },
       {
         "name": "admin_username",
         "label": "Administrator username",
@@ -44,38 +42,13 @@
       {
         "name": "registration_code",
         "label": "Lab registration code",
-        "type": "password",
+        "type": "text",
         "required": true,
         "secret": true,
         "pattern": "^[A-Z]{4}-[0-9]{4}$",
         "min_length": 9,
         "max_length": 9,
         "transform": "uppercase_pbkdf2_sha256"
-      },
-      {
-        "name": "preferred_vm_shape",
-        "label": "Preferred VM shape",
-        "type": "select",
-        "required": true,
-        "default": "VM.Standard.E5.Flex",
-        "options": [
-          {"value": "VM.Standard.E5.Flex", "label": "E5 Flex (recommended)"},
-          {"value": "VM.Standard.E4.Flex", "label": "E4 Flex"}
-        ]
-      },
-      {
-        "name": "vm_ocpus",
-        "label": "VM OCPUs",
-        "type": "number",
-        "required": true,
-        "default": 1
-      },
-      {
-        "name": "vm_memory_gbs",
-        "label": "VM memory (GB)",
-        "type": "number",
-        "required": true,
-        "default": 8
       },
       {
         "name": "ssh_allowed_cidr",
@@ -108,7 +81,28 @@
     "entrypoint": "infra/terraform/preflight.py",
     "timeout_seconds": 60,
     "requires_oci_credentials": true,
-    "output_inputs": ["home_region", "preferred_vm_shape"]
+    "output_inputs": ["home_region", "preferred_vm_shape"],
+    "runtime_fields": [
+      {
+        "name": "home_region",
+        "label": "OCI tenancy home region",
+        "type": "text",
+        "required": true,
+        "pattern": "^[a-z]{2}-[a-z0-9-]+-[0-9]+$",
+        "min_length": 8,
+        "max_length": 64
+      },
+      {
+        "name": "preferred_vm_shape",
+        "label": "Selected VM shape",
+        "type": "select",
+        "required": true,
+        "options": [
+          {"value": "VM.Standard.E5.Flex", "label": "E5 Flex"},
+          {"value": "VM.Standard.E4.Flex", "label": "E4 Flex"}
+        ]
+      }
+    ]
   },
   "post_apply": {
     "entrypoint": "infra/terraform/hooks/post_apply.py",
