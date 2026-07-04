@@ -79,6 +79,12 @@ def test_preflight_selects_e5_and_discovers_home_region() -> None:
     assert compute.details.shape_availabilities[0].instance_shape_config.memory_in_gbs == 16
 
 
+def test_preflight_accepts_available_status_without_a_count() -> None:
+    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
+    result, _ = _select({preflight.E5_SHAPE: (available, None)})
+    assert result["inputs"]["preferred_vm_shape"] == preflight.E5_SHAPE
+
+
 def test_preflight_selects_e4_when_e5_is_not_available() -> None:
     model = preflight.oci.core.models.CapacityReportShapeAvailability
     result, _ = _select(

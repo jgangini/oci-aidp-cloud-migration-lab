@@ -84,7 +84,7 @@ def select_inputs(
                     str(item.instance_shape) == shape
                     and item.availability_status
                     == oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
-                    and int(item.available_count or 0) >= 1
+                    and (item.available_count is None or int(item.available_count) >= 1)
                     for item in report.shape_availabilities
                 )
             ),
