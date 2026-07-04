@@ -10,8 +10,6 @@ permissions:
 jobs:
   validate-and-release:
     runs-on: ubuntu-latest
-    env:
-      SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -27,6 +25,8 @@ jobs:
           cache-dependency-path: apps/frontend/package-lock.json
       - run: pip install -r apps/backend/requirements-dev.txt
       - run: pytest apps/backend/tests infra/terraform/tests
+        env:
+          SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
       - run: npm ci
         working-directory: apps/frontend
       - run: npm test && npm run build

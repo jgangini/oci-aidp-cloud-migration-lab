@@ -26,8 +26,6 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
-    env:
-      SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,6 +35,8 @@ jobs:
           cache-dependency-path: apps/backend/requirements-dev.txt
       - run: pip install -r apps/backend/requirements-dev.txt
       - run: pytest apps/backend/tests infra/terraform/tests
+        env:
+          SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
 
   frontend:
     runs-on: ubuntu-latest
