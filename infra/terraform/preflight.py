@@ -52,63 +52,60 @@ def select_inputs(
     candidates = _candidate_shapes(E5_SHAPE)
     ocpus = 2.0
     memory = 16.0
-    ad_index = int(inputs.get("availability_domain_index", 0))
-
     regional_config = dict(sdk_config)
     regional_config["region"] = region
     identity = identity_factory(regional_config)
     home_region = _home_region(identity, tenancy_id)
     availability_domains = identity.list_availability_domains(tenancy_id).data
-    if ad_index < 0 or ad_index >= len(availability_domains):
-        raise ValueError("availability_domain_index is outside the deployment region")
-    availability_domain = str(availability_domains[ad_index].name)
-
-    details = oci.core.models.CreateComputeCapacityReportDetails(
-        compartment_id=tenancy_id,
-        availability_domain=availability_domain,
-        shape_availabilities=[
-            oci.core.models.CreateCapacityReportShapeAvailabilityDetails(
-                instance_shape=shape,
-                instance_shape_config=oci.core.models.CapacityReportInstanceShapeConfig(
-                    ocpus=ocpus,
-                    memory_in_gbs=memory,
-                ),
-            )
-            for shape in SUPPORTED_SHAPES
-        ],
-    )
-    report = compute_factory(regional_config).create_compute_capacity_report(details).data
-    selected = next(
-        (
-            shape
-            for shape in candidates
-            if any(
-                str(item.instance_shape) == shape
-                and item.availability_status
-                == oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
-                and int(item.available_count or 0) >= 1
-                for item in report.shape_availabilities
-            )
-        ),
-        None,
-    )
-    if selected is None:
-        raise RuntimeError("OCI reports no capacity for the supported E5/E4 Flex shapes")
-
-    return {
-        "inputs": {
-            "home_region": home_region,
-            "preferred_vm_shape": selected,
-        },
-        "events": [
-            {"name": "OCI tenancy home region", "status": "passed", "message": home_region},
-            {
-                "name": "Compute capacity preflight",
-                "status": "passed",
-                "message": f"{selected} available in {availability_domain}",
-            },
-        ],
-    }
+    compute = compute_factory(regional_config)
+    for availability_domain_index, domain in enumerate(availability_domains):
+        availability_domain = str(domain.name)
+        details = oci.core.models.CreateComputeCapacityReportDetails(
+            compartment_id=tenancy_id,
+            availability_domain=availability_domain,
+            shape_availabilities=[
+                oci.core.models.CreateCapacityReportShapeAvailabilityDetails(
+                    instance_shape=shape,
+                    instance_shape_config=oci.core.models.CapacityReportInstanceShapeConfig(
+                        ocpus=ocpus,
+                        memory_in_gbs=memory,
+                    ),
+                )
+                for shape in SUPPORTED_SHAPES
+            ],
+        )
+        report = compute.create_compute_capacity_report(details).data
+        selected = next(
+            (
+                shape
+                for shape in candidates
+                if any(
+                    str(item.instance_shape) == shape
+                    and item.availability_status
+                    == oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
+                    and int(item.available_count or 0) >= 1
+                    for item in report.shape_availabilities
+                )
+            ),
+            None,
+        )
+        if selected:
+            return {
+                "inputs": {
+                    "home_region": home_region,
+                    "preferred_vm_shape": selected,
+                    "availability_domain_index": availability_domain_index,
+                },
+                "events": [
+                    {"name": "OCI tenancy home region", "status": "passed", "message": home_region},
+                    {
+                        "name": "Compute capacity preflight",
+                        "status": "passed",
+                        "message": f"{selected} available in {availability_domain}",
+                    },
+                ],
+            }
+    raise RuntimeError("OCI reports no capacity for the supported E5/E4 Flex shapes in any Availability Domain")
 
 
 def _read_json_env(name: str) -> dict[str, Any]:

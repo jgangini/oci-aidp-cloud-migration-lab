@@ -70,6 +70,7 @@ def test_preflight_selects_e5_and_discovers_home_region() -> None:
     assert result["inputs"] == {
         "home_region": "us-ashburn-1",
         "preferred_vm_shape": preflight.E5_SHAPE,
+        "availability_domain_index": 0,
     }
     assert compute.details.compartment_id == "ocid1.tenancy.oc1..test"
     assert compute.details.availability_domain == "AD-1"
@@ -94,6 +95,37 @@ def test_preflight_falls_back_to_e4_without_user_shape_input() -> None:
     result, compute = _select({preflight.E4_SHAPE: (available, "1")})
     assert result["inputs"]["preferred_vm_shape"] == preflight.E4_SHAPE
     assert [item.instance_shape for item in compute.details.shape_availabilities] == list(preflight.SUPPORTED_SHAPES)
+
+
+def test_preflight_checks_all_availability_domains_for_standard_shape() -> None:
+    model = preflight.oci.core.models.CapacityReportShapeAvailability
+
+    class MultiAdIdentity(Identity):
+        def list_availability_domains(self, _tenancy_id: str) -> Any:
+            return SimpleNamespace(data=[SimpleNamespace(name="AD-1"), SimpleNamespace(name="AD-2")])
+
+    class MultiAdCompute:
+        def create_compute_capacity_report(self, details: Any) -> Any:
+            available = details.availability_domain == "AD-2"
+            return SimpleNamespace(
+                data=SimpleNamespace(
+                    shape_availabilities=[
+                        SimpleNamespace(
+                            instance_shape=preflight.E5_SHAPE,
+                            availability_status=(model.AVAILABILITY_STATUS_AVAILABLE if available else model.AVAILABILITY_STATUS_OUT_OF_HOST_CAPACITY),
+                            available_count=1 if available else 0,
+                        )
+                    ]
+                )
+            )
+
+    result = preflight.select_inputs(
+        {"region": "us-chicago-1", "inputs": {}},
+        {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
+        identity_factory=lambda _config: MultiAdIdentity(),
+        compute_factory=lambda _config: MultiAdCompute(),
+    )
+    assert result["inputs"]["availability_domain_index"] == 1
 
 
 def test_preflight_rejects_zero_or_missing_capacity() -> None:

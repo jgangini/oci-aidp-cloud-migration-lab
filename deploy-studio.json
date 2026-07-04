@@ -74,7 +74,7 @@
     "entrypoint": "infra/terraform/preflight.py",
     "timeout_seconds": 60,
     "requires_oci_credentials": true,
-    "output_inputs": ["home_region", "preferred_vm_shape"],
+    "output_inputs": ["home_region", "preferred_vm_shape", "availability_domain_index"],
     "runtime_fields": [
       {
         "name": "home_region",
@@ -94,6 +94,14 @@
           {"value": "VM.Standard.E5.Flex", "label": "E5 Flex"},
           {"value": "VM.Standard.E4.Flex", "label": "E4 Flex"}
         ]
+      },
+      {
+        "name": "availability_domain_index",
+        "label": "Selected Availability Domain",
+        "type": "number",
+        "required": true,
+        "min_length": 1,
+        "max_length": 2
       }
     ]
   },
