@@ -21,6 +21,7 @@ def test_deploy_studio_manifest_contract() -> None:
     assert "preferred_vm_shape" not in fields
     assert "vm_ocpus" not in fields
     assert "vm_memory_gbs" not in fields
+    assert "ssh_allowed_cidr" not in fields
     assert fields["admin_password"]["transform"] == "pbkdf2_sha256"
     assert fields["registration_code"]["pattern"] == "^[A-Z]{4}-[0-9]{4}$"
     assert fields["registration_code"]["transform"] == "uppercase_pbkdf2_sha256"

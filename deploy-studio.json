@@ -49,13 +49,6 @@
         "min_length": 9,
         "max_length": 9,
         "transform": "uppercase_pbkdf2_sha256"
-      },
-      {
-        "name": "ssh_allowed_cidr",
-        "label": "Optional SSH CIDR",
-        "type": "text",
-        "required": false,
-        "default": ""
       }
     ]
   },
