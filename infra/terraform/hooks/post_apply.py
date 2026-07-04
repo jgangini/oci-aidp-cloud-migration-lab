@@ -215,7 +215,7 @@ def wait_for_existing_active(
 
 def role_has_group(api: AidpApi, role_key: str, group_ocid: str) -> bool:
     body = api.request("GET", f"/roles/{role_key}").body
-    assignees = body.get("assignees", []) if isinstance(body, dict) else []
+    assignees = (body.get("assignees") or []) if isinstance(body, dict) else []
     return any(
         isinstance(item, dict)
         and str(item.get("type", "")).upper() == "GROUP"

@@ -213,6 +213,15 @@ def test_permission_action_must_be_observable(monkeypatch) -> None:
     assert changed is True
 
 
+def test_new_role_with_null_assignees_has_no_group() -> None:
+    class Api:
+        @staticmethod
+        def request(method, path):
+            return post_apply.ApiResponse(200, {"assignees": None}, {})
+
+    assert not post_apply.role_has_group(Api(), "role-key", "group-id")
+
+
 def test_permission_conflict_is_not_treated_as_success(monkeypatch) -> None:
     class ConflictApi:
         @staticmethod
