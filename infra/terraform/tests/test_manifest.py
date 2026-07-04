@@ -85,6 +85,8 @@ def test_runtime_security_contracts() -> None:
     assert 'resource "time_sleep" "kms_endpoint"' in identity
     assert 'create_duration = "120s"' in identity
     assert "depends_on          = [time_sleep.kms_endpoint]" in identity
+    network = (root / "infra/terraform/network.tf").read_text(encoding="utf-8")
+    assert "security_list_ids          = [oci_core_vcn.lab.default_security_list_id]" in network
     source_sha_block = variables.split('variable "source_commit_sha"', 1)[1]
     assert 'default     = "main"' not in source_sha_block
     assert 'regex("^[0-9a-f]{40}$"' in source_sha_block

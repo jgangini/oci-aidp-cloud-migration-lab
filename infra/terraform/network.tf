@@ -31,7 +31,7 @@ resource "oci_core_subnet" "public" {
   display_name               = "${local.name_prefix}-public-subnet"
   dns_label                  = "public"
   route_table_id             = oci_core_route_table.public.id
-  security_list_ids          = []
+  security_list_ids          = [oci_core_vcn.lab.default_security_list_id]
   prohibit_public_ip_on_vnic = false
 }
 
