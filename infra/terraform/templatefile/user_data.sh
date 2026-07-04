@@ -39,15 +39,16 @@ use_reachable_base_images() {
 
 dnf -y makecache
 dnf -y install dnf-plugins-core firewalld curl git openssl python3
+systemctl stop firewalld >/dev/null 2>&1 || true
+firewall-offline-cmd --zone=public --add-service=http
+firewall-offline-cmd --zone=public --add-service=https
+systemctl enable --now firewalld
+
 dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
 dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 systemctl enable --now docker
 docker info >/dev/null
-systemctl enable --now firewalld
-firewall-cmd --add-service=http --permanent
-firewall-cmd --add-service=https --permanent
-firewall-cmd --reload
 
 install -d -m 0700 "$TLS_DIR" "$STATE_DIR"
 PUBLIC_IP=$(curl -fsS -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/ | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["publicIp"])')

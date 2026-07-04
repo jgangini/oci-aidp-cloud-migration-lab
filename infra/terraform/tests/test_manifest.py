@@ -70,8 +70,9 @@ def test_runtime_security_contracts() -> None:
     assert "limit_req_status 429" in nginx
     assert 'return 429 \'{"detail":"Too many registration attempts"}\'' in nginx
     assert 'chmod 0600 "$TLS_DIR/tls.key" 2>/dev/null || true' in entrypoint
-    assert "firewall-cmd --add-service=http --permanent" in cloud_init
-    assert "firewall-cmd --add-service=https --permanent" in cloud_init
+    assert "firewall-offline-cmd --zone=public --add-service=http" in cloud_init
+    assert "firewall-offline-cmd --zone=public --add-service=https" in cloud_init
+    assert "firewall-cmd" not in cloud_init
     assert "download.docker.com/linux/centos/docker-ce.repo" in cloud_init
     assert "public.ecr.aws/docker/library/node" in cloud_init
     assert "public.ecr.aws/docker/library/python" in cloud_init
