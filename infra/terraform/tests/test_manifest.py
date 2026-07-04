@@ -97,6 +97,8 @@ def test_runtime_security_contracts() -> None:
     network = (root / "infra/terraform/b_oci_core_vcn.tf").read_text(encoding="utf-8")
     assert 'resource "oci_core_security_list" "web"' in network
     assert "security_list_ids          = [oci_core_security_list.web.id]" in network
+    assert 'dns_label      = "aidplab"' in network
+    assert 'dns_label                  = "public"' in network
     assert 'ingress_tcp_ports = [80, 443]' in variables
     assert "oci_core_network_security_group" not in network
     source_sha_block = variables.split('variable "source_commit_sha"', 1)[1]

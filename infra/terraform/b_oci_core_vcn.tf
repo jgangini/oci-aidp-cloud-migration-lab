@@ -2,6 +2,7 @@ resource "oci_core_vcn" "lab" {
   compartment_id = local.target_compartment
   cidr_block     = var._oci_vcn.cidr_block
   display_name   = "${local.name_prefix}-vcn"
+  dns_label      = "aidplab"
 }
 
 resource "oci_core_subnet" "public" {
@@ -9,6 +10,7 @@ resource "oci_core_subnet" "public" {
   compartment_id             = local.target_compartment
   vcn_id                     = oci_core_vcn.lab.id
   display_name               = "${local.name_prefix}-public-subnet"
+  dns_label                  = "public"
   prohibit_internet_ingress  = false
   prohibit_public_ip_on_vnic = false
   route_table_id             = oci_core_route_table.public.id
