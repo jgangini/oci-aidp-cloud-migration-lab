@@ -78,6 +78,8 @@ def test_runtime_security_contracts() -> None:
     assert "public.ecr.aws/docker/library/python" in cloud_init
     assert "retry 5 docker build" in cloud_init
     assert "PUBLIC_IP=$(oci-public-ip -g" in cloud_init
+    assert "grep -Eo '([0-9]{1,3}\\.){3}[0-9]{1,3}'" in cloud_init
+    assert "tr -cd 'A-Za-z0-9.-'" in cloud_init
     assert "IP.1 = $PUBLIC_IP" in cloud_init
     assert "DNS.1 = $FQDN" in cloud_init
     assert "-addext" not in cloud_init

@@ -53,14 +53,20 @@ docker info >/dev/null
 install -d -m 0700 "$TLS_DIR" "$STATE_DIR"
 PUBLIC_IP=""
 for attempt in $(seq 1 12); do
-  PUBLIC_IP=$(oci-public-ip -g 2>/dev/null) || PUBLIC_IP=""
+  PUBLIC_IP=$(oci-public-ip -g 2>/dev/null \
+    | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+    | tail -n 1) || PUBLIC_IP=""
   if [ -n "$PUBLIC_IP" ]; then
     break
   fi
   sleep 5
 done
 test -n "$PUBLIC_IP"
-FQDN=$(hostname -f 2>/dev/null || hostname)
+FQDN=$(hostname -f 2>/dev/null | head -n 1 | tr -cd 'A-Za-z0-9.-')
+if [ -z "$FQDN" ]; then
+  FQDN=$(hostname | head -n 1 | tr -cd 'A-Za-z0-9.-')
+fi
+test -n "$FQDN"
 cat >"$TLS_DIR/openssl.cnf" <<EOF
 [req]
 prompt = no
