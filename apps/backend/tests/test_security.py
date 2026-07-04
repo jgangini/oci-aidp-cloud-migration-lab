@@ -1,3 +1,6 @@
+import base64
+import hashlib
+
 from app.security import RateLimiter, hash_secret, issue_session, verify_secret, verify_session
 
 
@@ -6,6 +9,15 @@ def test_pbkdf2_round_trip_and_wrong_value() -> None:
     assert verify_secret("ABCD-1234", encoded)
     assert not verify_secret("WXYZ-9999", encoded)
     assert not verify_secret("ABCD-1234", "not-a-hash")
+
+
+def test_pbkdf2_accepts_deploy_studio_format() -> None:
+    value = "AIDP-2026"
+    salt = "deploy-studio-test-salt"
+    digest = hashlib.pbkdf2_hmac("sha256", value.encode(), salt.encode(), 1_000)
+    encoded = f"pbkdf2_sha256$1000${salt}${base64.b64encode(digest).decode()}"
+    assert verify_secret(value, encoded)
+    assert not verify_secret("WRONG-0000", encoded)
 
 
 def test_session_rejects_tampering_and_expiry() -> None:

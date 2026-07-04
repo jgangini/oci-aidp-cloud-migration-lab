@@ -33,8 +33,9 @@ def verify_secret(value: str, encoded: str) -> bool:
         algorithm, iterations_text, salt_text, expected_text = encoded.split("$", 3)
         if algorithm != PBKDF2_ALGORITHM:
             return False
-        salt = _b64decode(salt_text)
-        expected = _b64decode(expected_text)
+        deploy_studio_format = expected_text.endswith("=")
+        salt = salt_text.encode() if deploy_studio_format else _b64decode(salt_text)
+        expected = base64.b64decode(expected_text) if deploy_studio_format else _b64decode(expected_text)
         actual = hashlib.pbkdf2_hmac("sha256", value.encode(), salt, int(iterations_text))
         return hmac.compare_digest(actual, expected)
     except (ValueError, TypeError):
