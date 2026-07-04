@@ -92,6 +92,14 @@ run "resolved_compartment_contract" {
 
   assert {
     condition = anytrue([
+      for statement in oci_identity_policy.developer_console.statements :
+      strcontains(statement, "Allow group Administrators to manage ai-data-platforms in compartment id ocid1.compartment.oc1..test")
+    ])
+    error_message = "The deployment operator needs scoped AIDP administration for catalog reconciliation."
+  }
+
+  assert {
+    condition = anytrue([
       for statement in oci_identity_policy.aidp_service.statements :
       strcontains(statement, "target.bucket.system-tag.orcl-aidp.governingAidpId")
       ]) && anytrue([

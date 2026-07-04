@@ -130,6 +130,7 @@ resource "oci_identity_policy" "developer_console" {
   name           = "${local.name_prefix}-developer-console"
   description    = "Allow registered lab developers to open AIDP and use only the lab data bucket"
   statements = [
+    "Allow group Administrators to manage ai-data-platforms in compartment id ${local.target_compartment}",
     "Allow group '${local.default_domain.display_name}'/'${oci_identity_domains_group.developers.display_name}' to use ai-data-platforms in compartment id ${local.target_compartment}",
     "Allow group '${local.default_domain.display_name}'/'${oci_identity_domains_group.developers.display_name}' to read buckets in compartment id ${local.target_compartment}",
     "Allow group '${local.default_domain.display_name}'/'${oci_identity_domains_group.developers.display_name}' to manage objects in compartment id ${local.target_compartment} where target.bucket.name = 'aidp-data-${local.suffix}'"
