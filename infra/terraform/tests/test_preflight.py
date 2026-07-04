@@ -143,3 +143,9 @@ def test_preflight_uses_runner_private_key_path(monkeypatch) -> None:
     monkeypatch.setattr(preflight.oci.config, "validate_config", lambda value: None)
     loaded = preflight._load_sdk_config()
     assert loaded["key_file"] == "private-uploaded-key.pem"
+
+
+def test_safe_error_message_keeps_capacity_and_oci_errors_actionable() -> None:
+    assert preflight._safe_error_message(RuntimeError("OCI reports no capacity")) == "OCI reports no capacity"
+    error = preflight.oci.exceptions.ServiceError(status=429, code="TooManyRequests", headers={}, message="hidden detail")
+    assert preflight._safe_error_message(error) == "OCI 429 TooManyRequests"

@@ -13,6 +13,14 @@ E4_SHAPE = "VM.Standard.E4.Flex"
 SUPPORTED_SHAPES = (E5_SHAPE, E4_SHAPE)
 
 
+def _safe_error_message(exc: Exception) -> str:
+    if isinstance(exc, oci.exceptions.ServiceError):
+        return f"OCI {exc.status} {exc.code}"
+    if isinstance(exc, (RuntimeError, ValueError)):
+        return str(exc)[:256]
+    return type(exc).__name__
+
+
 def _home_region(identity: Any, tenancy_id: str) -> str:
     tenancy = identity.get_tenancy(tenancy_id).data
     home_key = str(tenancy.home_region_key).upper()
@@ -132,7 +140,7 @@ def main() -> int:
                     {
                         "name": "OCI deployment preflight",
                         "status": "failed",
-                        "message": type(exc).__name__,
+                        "message": _safe_error_message(exc),
                     }
                 ],
             }
