@@ -91,10 +91,16 @@ resource "oci_kms_vault" "lab" {
   vault_type     = "DEFAULT"
 }
 
+resource "time_sleep" "kms_endpoint" {
+  create_duration = "120s"
+  depends_on      = [oci_kms_vault.lab]
+}
+
 resource "oci_kms_key" "lab" {
   compartment_id      = local.target_compartment
   display_name        = "${local.name_prefix}-key"
   management_endpoint = oci_kms_vault.lab.management_endpoint
+  depends_on          = [time_sleep.kms_endpoint]
   protection_mode     = "SOFTWARE"
 
   key_shape {

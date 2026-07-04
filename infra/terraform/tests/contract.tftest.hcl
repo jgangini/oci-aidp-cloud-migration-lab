@@ -3,6 +3,7 @@ mock_provider "oci" {
   alias = "home"
 }
 mock_provider "random" {}
+mock_provider "time" {}
 
 override_resource {
   target = random_string.suffix

@@ -82,6 +82,9 @@ def test_runtime_security_contracts() -> None:
     assert identity.count("oci.home") == 7
     assert compute.count("oci.home") == 2
     assert aidp.count("oci.home") == 1
+    assert 'resource "time_sleep" "kms_endpoint"' in identity
+    assert 'create_duration = "120s"' in identity
+    assert "depends_on          = [time_sleep.kms_endpoint]" in identity
     source_sha_block = variables.split('variable "source_commit_sha"', 1)[1]
     assert 'default     = "main"' not in source_sha_block
     assert 'regex("^[0-9a-f]{40}$"' in source_sha_block
