@@ -51,7 +51,14 @@ systemctl enable --now docker
 docker info >/dev/null
 
 install -d -m 0700 "$TLS_DIR" "$STATE_DIR"
-PUBLIC_IP=$(curl -fsS -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/ | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["publicIp"])')
+PUBLIC_IP=""
+for attempt in $(seq 1 12); do
+  PUBLIC_IP=$(oci-public-ip -g 2>/dev/null) || PUBLIC_IP=""
+  if [ -n "$PUBLIC_IP" ]; then
+    break
+  fi
+  sleep 5
+done
 test -n "$PUBLIC_IP"
 FQDN=$(hostname -f 2>/dev/null || hostname)
 openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 365 \

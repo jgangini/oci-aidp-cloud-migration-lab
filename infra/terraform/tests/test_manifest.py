@@ -77,6 +77,7 @@ def test_runtime_security_contracts() -> None:
     assert "public.ecr.aws/docker/library/node" in cloud_init
     assert "public.ecr.aws/docker/library/python" in cloud_init
     assert "retry 5 docker build" in cloud_init
+    assert "PUBLIC_IP=$(oci-public-ip -g" in cloud_init
     assert "touch /var/local/userdata.done" in cloud_init
     assert '"$TLS_DIR:/etc/aidp-lab/tls:ro,Z"' in cloud_init
     assert '"$STATE_DIR:/var/lib/aidp-lab:Z"' in cloud_init
