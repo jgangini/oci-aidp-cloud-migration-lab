@@ -61,9 +61,26 @@ for attempt in $(seq 1 12); do
 done
 test -n "$PUBLIC_IP"
 FQDN=$(hostname -f 2>/dev/null || hostname)
+cat >"$TLS_DIR/openssl.cnf" <<EOF
+[req]
+prompt = no
+distinguished_name = distinguished_name
+x509_extensions = v3_req
+
+[distinguished_name]
+CN = $PUBLIC_IP
+
+[v3_req]
+subjectAltName = @alt_names
+
+[alt_names]
+IP.1 = $PUBLIC_IP
+DNS.1 = $FQDN
+EOF
+chmod 0600 "$TLS_DIR/openssl.cnf"
 openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 365 \
-  -subj "/CN=$PUBLIC_IP" \
-  -addext "subjectAltName=IP:$PUBLIC_IP,DNS:$FQDN" \
+  -config "$TLS_DIR/openssl.cnf" \
+  -extensions v3_req \
   -keyout "$TLS_DIR/tls.key" \
   -out "$TLS_DIR/tls.crt"
 chmod 0600 "$TLS_DIR/tls.key"
