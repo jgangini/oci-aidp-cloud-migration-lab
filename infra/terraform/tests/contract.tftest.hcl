@@ -134,3 +134,24 @@ run "explicit_e4_retry_contract" {
     error_message = "A retry can switch to E4 using only a non-secret Terraform variable."
   }
 }
+
+run "authorized_e3_fallback_contract" {
+  command = plan
+
+  variables {
+    tenancy_ocid            = "ocid1.tenancy.oc1..test"
+    home_region             = "us-ashburn-1"
+    compartment_ocid        = "ocid1.compartment.oc1..test"
+    objectstorage_namespace = "testnamespace"
+    deployment_suffix       = "test1234"
+    admin_password_hash     = "pbkdf2_sha256$600000$salt$digest"
+    registration_code_hash  = "pbkdf2_sha256$600000$salt$digest"
+    source_commit_sha       = "0123456789abcdef0123456789abcdef01234567"
+    preferred_vm_shape      = "VM.Standard.E3.Flex"
+  }
+
+  assert {
+    condition     = oci_core_instance.lab.shape == "VM.Standard.E3.Flex"
+    error_message = "The authorized fallback can use E3 with the same flexible configuration."
+  }
+}

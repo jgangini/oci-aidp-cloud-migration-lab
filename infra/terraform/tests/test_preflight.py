@@ -97,6 +97,18 @@ def test_preflight_falls_back_to_e4_without_user_shape_input() -> None:
     assert [item.instance_shape for item in compute.details.shape_availabilities] == list(preflight.SUPPORTED_SHAPES)
 
 
+def test_preflight_falls_back_to_authorized_e3_when_e5_and_e4_are_unavailable() -> None:
+    model = preflight.oci.core.models.CapacityReportShapeAvailability
+    result, _ = _select(
+        {
+            preflight.E5_SHAPE: (model.AVAILABILITY_STATUS_OUT_OF_HOST_CAPACITY, "0"),
+            preflight.E4_SHAPE: (model.AVAILABILITY_STATUS_OUT_OF_HOST_CAPACITY, "0"),
+            preflight.E3_SHAPE: (model.AVAILABILITY_STATUS_AVAILABLE, "1"),
+        }
+    )
+    assert result["inputs"]["preferred_vm_shape"] == preflight.E3_SHAPE
+
+
 def test_preflight_checks_all_availability_domains_for_standard_shape() -> None:
     model = preflight.oci.core.models.CapacityReportShapeAvailability
 

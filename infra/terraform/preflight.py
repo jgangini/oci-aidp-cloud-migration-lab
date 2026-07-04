@@ -10,7 +10,8 @@ import oci
 
 E5_SHAPE = "VM.Standard.E5.Flex"
 E4_SHAPE = "VM.Standard.E4.Flex"
-SUPPORTED_SHAPES = (E5_SHAPE, E4_SHAPE)
+E3_SHAPE = "VM.Standard.E3.Flex"
+SUPPORTED_SHAPES = (E5_SHAPE, E4_SHAPE, E3_SHAPE)
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -33,8 +34,8 @@ def _home_region(identity: Any, tenancy_id: str) -> str:
 
 def _candidate_shapes(preferred: str) -> list[str]:
     if preferred not in SUPPORTED_SHAPES:
-        raise ValueError("preferred_vm_shape must be E5 Flex or E4 Flex")
-    return [preferred, E4_SHAPE] if preferred == E5_SHAPE else [E4_SHAPE]
+        raise ValueError("preferred_vm_shape must be E5 Flex, E4 Flex, or E3 Flex")
+    return list(SUPPORTED_SHAPES[SUPPORTED_SHAPES.index(preferred) :])
 
 
 def select_inputs(
@@ -105,7 +106,7 @@ def select_inputs(
                     },
                 ],
             }
-    raise RuntimeError("OCI reports no capacity for the supported E5/E4 Flex shapes in any Availability Domain")
+    raise RuntimeError("OCI reports no capacity for the supported E5/E4/E3 Flex shapes in any Availability Domain")
 
 
 def _read_json_env(name: str) -> dict[str, Any]:

@@ -69,12 +69,12 @@ variable "registration_code_hash" {
 }
 
 variable "preferred_vm_shape" {
-  description = "Server-selected E5/E4 Flex shape from the trusted capacity preflight."
+  description = "Server-selected E5/E4/E3 Flex shape from the trusted capacity preflight."
   type        = string
   default     = "VM.Standard.E5.Flex"
   validation {
-    condition     = contains(["VM.Standard.E5.Flex", "VM.Standard.E4.Flex"], var.preferred_vm_shape)
-    error_message = "preferred_vm_shape must be E5 Flex or E4 Flex."
+    condition     = contains(["VM.Standard.E5.Flex", "VM.Standard.E4.Flex", "VM.Standard.E3.Flex"], var.preferred_vm_shape)
+    error_message = "preferred_vm_shape must be E5 Flex, E4 Flex, or E3 Flex."
   }
 }
 
