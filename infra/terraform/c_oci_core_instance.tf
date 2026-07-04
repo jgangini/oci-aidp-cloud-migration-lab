@@ -7,9 +7,10 @@ locals {
 }
 
 data "oci_core_images" "oracle_linux" {
-  compartment_id           = local.target_compartment
-  operating_system         = "Oracle Linux"
-  operating_system_version = "9"
+  compartment_id   = local.target_compartment
+  operating_system = "Oracle Linux"
+  # ponytail: OL9.7 images currently stall in initramfs on fresh E5 launches; return to OL9 after OCI publishes a bootable image.
+  operating_system_version = "8"
   shape                    = var.preferred_vm_shape
   sort_by                  = "TIMECREATED"
   sort_order               = "DESC"
