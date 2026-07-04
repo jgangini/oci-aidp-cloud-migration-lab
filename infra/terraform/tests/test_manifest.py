@@ -58,13 +58,13 @@ def test_runtime_security_contracts() -> None:
     root = Path(__file__).parents[3]
     nginx = (root / "docker/nginx.conf").read_text(encoding="utf-8")
     entrypoint = (root / "docker/entrypoint.sh").read_text(encoding="utf-8")
-    cloud_init = (root / "infra/terraform/templates/cloud-init.yaml.tftpl").read_text(encoding="utf-8")
+    cloud_init = (root / "infra/terraform/templatefile/user_data.sh").read_text(encoding="utf-8")
     variables = (root / "infra/terraform/variables.tf").read_text(encoding="utf-8")
-    providers = (root / "infra/terraform/providers.tf").read_text(encoding="utf-8")
-    compute = (root / "infra/terraform/compute.tf").read_text(encoding="utf-8")
-    identity = (root / "infra/terraform/identity.tf").read_text(encoding="utf-8")
-    aidp = (root / "infra/terraform/aidp.tf").read_text(encoding="utf-8")
-    storage = (root / "infra/terraform/storage.tf").read_text(encoding="utf-8")
+    providers = (root / "infra/terraform/a_main.tf").read_text(encoding="utf-8")
+    compute = (root / "infra/terraform/c_oci_core_instance.tf").read_text(encoding="utf-8")
+    identity = (root / "infra/terraform/d_oci_identity.tf").read_text(encoding="utf-8")
+    aidp = (root / "infra/terraform/e_oci_ai_data_platform.tf").read_text(encoding="utf-8")
+    storage = (root / "infra/terraform/b_oci_objectstorage_bucket.tf").read_text(encoding="utf-8")
     assert "$proxy_add_x_forwarded_for" not in nginx
     assert nginx.count("X-Forwarded-For $remote_addr") == 2
     assert "limit_req_status 429" in nginx
@@ -72,23 +72,55 @@ def test_runtime_security_contracts() -> None:
     assert 'chmod 0600 "$TLS_DIR/tls.key" 2>/dev/null || true' in entrypoint
     assert "firewall-cmd --add-service=http --permanent" in cloud_init
     assert "firewall-cmd --add-service=https --permanent" in cloud_init
-    assert "/opt/aidp-lab/tls:/etc/aidp-lab/tls:ro,Z" in cloud_init
-    assert "/opt/aidp-lab/state:/var/lib/aidp-lab:Z" in cloud_init
+    assert "download.docker.com/linux/centos/docker-ce.repo" in cloud_init
+    assert "public.ecr.aws/docker/library/node" in cloud_init
+    assert "public.ecr.aws/docker/library/python" in cloud_init
+    assert "retry 5 docker build" in cloud_init
+    assert "touch /var/local/userdata.done" in cloud_init
+    assert '"$TLS_DIR:/etc/aidp-lab/tls:ro,Z"' in cloud_init
+    assert '"$STATE_DIR:/var/lib/aidp-lab:Z"' in cloud_init
     assert 'alias  = "home"' in providers
     assert "region = var.home_region" in providers
     assert "shape_candidates" not in compute
     assert "oci_core_shapes" not in compute
     assert compute.count("var.preferred_vm_shape") == 2
+    assert "var._oci_instance.shape.ocpus" in compute
+    assert "var._oci_instance.shape.memory_in_gbs" in compute
+    assert 'variable "vm_ocpus"' not in variables
+    assert 'variable "vm_memory_gbs"' not in variables
     assert identity.count("oci.home") == 7
     assert compute.count("oci.home") == 2
     assert aidp.count("oci.home") == 1
     assert 'resource "time_sleep" "kms_endpoint"' in identity
     assert 'create_duration = "120s"' in identity
     assert "depends_on          = [time_sleep.kms_endpoint]" in identity
-    network = (root / "infra/terraform/network.tf").read_text(encoding="utf-8")
-    assert "security_list_ids          = [oci_core_vcn.lab.default_security_list_id]" in network
+    network = (root / "infra/terraform/b_oci_core_vcn.tf").read_text(encoding="utf-8")
+    assert 'resource "oci_core_security_list" "web"' in network
+    assert "security_list_ids          = [oci_core_security_list.web.id]" in network
+    assert 'ingress_tcp_ports = [80, 443]' in variables
+    assert "oci_core_network_security_group" not in network
     source_sha_block = variables.split('variable "source_commit_sha"', 1)[1]
     assert 'default     = "main"' not in source_sha_block
     assert 'regex("^[0-9a-f]{40}$"' in source_sha_block
     assert "force_destroy" in storage
     assert "prevent_destroy" not in storage
+
+
+def test_terraform_files_follow_select_ai_order() -> None:
+    root = Path(__file__).parents[3] / "infra/terraform"
+    expected = {
+        "a_main.tf",
+        "b_oci_core_vcn.tf",
+        "b_oci_objectstorage_bucket.tf",
+        "c_oci_core_instance.tf",
+        "d_oci_identity.tf",
+        "e_oci_ai_data_platform.tf",
+        "f_outputs.tf",
+        "naming.tf",
+        "variables.tf",
+        "versions.tf",
+    }
+    assert expected.issubset({path.name for path in root.glob("*.tf")})
+    assert not {"main.tf", "network.tf", "compute.tf", "storage.tf", "identity.tf", "aidp.tf", "outputs.tf", "providers.tf"} & {
+        path.name for path in root.glob("*.tf")
+    }

@@ -1,5 +1,5 @@
 data "oci_identity_availability_domains" "lab" {
-  compartment_id = local.target_compartment
+  compartment_id = var.tenancy_ocid
 }
 
 locals {
@@ -22,16 +22,13 @@ resource "oci_core_instance" "lab" {
   shape               = var.preferred_vm_shape
 
   shape_config {
-    ocpus         = var.vm_ocpus
-    memory_in_gbs = var.vm_memory_gbs
+    ocpus         = var._oci_instance.shape.ocpus
+    memory_in_gbs = var._oci_instance.shape.memory_in_gbs
   }
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.public.id
     assign_public_ip = true
-    display_name     = "${local.name_prefix}-vnic"
-    hostname_label   = "aidplab"
-    nsg_ids          = [oci_core_network_security_group.web.id]
   }
 
   source_details {
@@ -39,28 +36,29 @@ resource "oci_core_instance" "lab" {
     source_id   = data.oci_core_images.oracle_linux.images[0].id
   }
 
-  metadata = merge(
-    {
-      user_data = base64encode(templatefile("${path.module}/templates/cloud-init.yaml.tftpl", {
-        admin_username           = var.admin_username
-        admin_password_hash      = var.admin_password_hash
-        registration_code_hash   = var.registration_code_hash
-        identity_domain_url      = local.default_domain.url
-        identity_oauth_client_id = oci_identity_domains_app.registration.name
-        oauth_secret_ocid        = oci_vault_secret.oauth_client.id
-        developer_group_id       = oci_identity_domains_group.developers.id
-        pending_group_id         = oci_identity_domains_group.pending.id
-        lab_marker               = local.name_prefix
-        repository_url           = var.source_repository_url
-        source_commit_sha        = var.source_commit_sha
-      }))
-    },
-    var.ssh_public_key == "" ? {} : { ssh_authorized_keys = var.ssh_public_key }
-  )
+  metadata = {
+    user_data = base64encode(templatefile("${path.module}/templatefile/user_data.sh", {
+      admin_username           = var.admin_username
+      admin_password_hash      = var.admin_password_hash
+      registration_code_hash   = var.registration_code_hash
+      identity_domain_url      = local.default_domain.url
+      identity_oauth_client_id = oci_identity_domains_app.registration.name
+      oauth_secret_ocid        = oci_vault_secret.oauth_client.id
+      developer_group_id       = oci_identity_domains_group.developers.id
+      pending_group_id         = oci_identity_domains_group.pending.id
+      lab_marker               = local.name_prefix
+      source_repo_url          = var.source_repository_url
+      source_commit_sha        = var.source_commit_sha
+    }))
+  }
 
   preserve_boot_volume = false
 
   lifecycle {
+    ignore_changes = [
+      source_details[0].source_id,
+    ]
+
     precondition {
       condition     = var.availability_domain_index >= 0 && var.availability_domain_index < length(data.oci_identity_availability_domains.lab.availability_domains)
       error_message = "availability_domain_index is outside the region's available domains."

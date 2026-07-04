@@ -78,23 +78,15 @@ variable "preferred_vm_shape" {
   }
 }
 
-variable "vm_ocpus" {
-  description = "Select AI Analyzer standard flexible VM OCPUs."
-  type        = number
-  default     = 2
-  validation {
-    condition     = var.vm_ocpus >= 1 && var.vm_ocpus <= 16
-    error_message = "vm_ocpus must be between 1 and 16."
-  }
-}
+variable "_oci_instance" {
+  description = "Compute defaults aligned with the Select AI Analyzer application host."
 
-variable "vm_memory_gbs" {
-  description = "Select AI Analyzer standard flexible VM memory."
-  type        = number
-  default     = 16
-  validation {
-    condition     = var.vm_memory_gbs >= 8 && var.vm_memory_gbs <= 256
-    error_message = "vm_memory_gbs must be between 8 and 256."
+  default = {
+    shape = {
+      name          = "VM.Standard.E5.Flex"
+      ocpus         = 2
+      memory_in_gbs = 16
+    }
   }
 }
 
@@ -104,21 +96,13 @@ variable "availability_domain_index" {
   default     = 0
 }
 
-variable "ssh_allowed_cidr" {
-  description = "Optional CIDR allowed to SSH. Empty keeps port 22 closed."
-  type        = string
-  default     = ""
-  validation {
-    condition     = var.ssh_allowed_cidr == "" || can(cidrnetmask(var.ssh_allowed_cidr))
-    error_message = "ssh_allowed_cidr must be empty or a valid CIDR."
-  }
-}
+variable "_oci_vcn" {
+  description = "VCN defaults aligned with the Select AI Analyzer application host."
 
-variable "ssh_public_key" {
-  description = "Optional administrator SSH public key."
-  type        = string
-  default     = ""
-  sensitive   = true
+  default = {
+    cidr_block        = "10.10.0.0/24"
+    ingress_tcp_ports = [80, 443]
+  }
 }
 
 variable "source_repository_url" {
