@@ -356,7 +356,7 @@ def test_workspace_waits_until_active(monkeypatch) -> None:
 def test_aidp_api_uses_quick_start_production_endpoint() -> None:
     api = post_apply.AidpApi("us-chicago-1", "ocid1.aidataplatform.test", object(), "deployment")
     assert api.base == (
-        "https://aidp.us-chicago-1.oci.oraclecloud.com/api/20260430/"
+        "https://aidp.us-chicago-1.oci.oraclecloud.com/20260430/"
         "aiDataPlatforms/ocid1.aidataplatform.test"
     )
 

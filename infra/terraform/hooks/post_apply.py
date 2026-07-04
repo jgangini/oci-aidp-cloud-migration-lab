@@ -59,7 +59,7 @@ class ApiResponse:
 
 class AidpApi:
     def __init__(self, region: str, platform_id: str, signer: Any, deployment_id: str) -> None:
-        self.base = f"https://aidp.{region}.oci.oraclecloud.com/api/{API_VERSION}/aiDataPlatforms/{platform_id}"
+        self.base = f"https://aidp.{region}.oci.oraclecloud.com/{API_VERSION}/aiDataPlatforms/{platform_id}"
         self.signer = signer
         self.deployment_id = deployment_id
         self.session = requests.Session()
