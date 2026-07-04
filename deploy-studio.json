@@ -22,7 +22,7 @@
     "fields": [
       {
         "name": "admin_username",
-        "label": "Administrator username",
+        "label": "Username",
         "type": "text",
         "required": true,
         "default": "admin",
@@ -31,7 +31,7 @@
       },
       {
         "name": "admin_password",
-        "label": "Administrator password",
+        "label": "Password",
         "type": "password",
         "required": true,
         "secret": true,
