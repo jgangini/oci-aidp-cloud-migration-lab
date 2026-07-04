@@ -114,13 +114,16 @@ class IdentityClient:
         return matches[0] if matches else None
 
     async def create_user(self, name: str, email: str, password: str) -> dict[str, Any]:
+        name_parts = name.rsplit(" ", 1)
+        given_name = name_parts[0]
+        family_name = name_parts[-1]
         response = await self._request(
             "POST",
             "/admin/v1/Users",
             json={
                 "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
                 "userName": email,
-                "name": {"formatted": name},
+                "name": {"formatted": name, "givenName": given_name, "familyName": family_name},
                 "displayName": name,
                 "emails": [{"value": email, "type": "work", "primary": True}],
                 "password": password,

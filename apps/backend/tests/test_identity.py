@@ -46,6 +46,11 @@ def test_group_user_listing_paginates() -> None:
 def test_identity_domain_password_rejection_is_safe() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
+        assert json.loads(request.content)["name"] == {
+            "formatted": "Ada",
+            "givenName": "Ada",
+            "familyName": "Ada",
+        }
         return httpx.Response(400, json={"detail": "Password policy rejected the password"})
 
     async def run() -> None:
