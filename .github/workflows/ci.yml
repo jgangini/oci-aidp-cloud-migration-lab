@@ -26,6 +26,8 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    env:
+      SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
