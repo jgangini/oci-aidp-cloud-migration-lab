@@ -1,0 +1,13 @@
+.git
+.github
+.terraform
+.venv
+node_modules
+dist
+*.tsbuildinfo
+__pycache__
+.pytest_cache
+*.tfstate*
+.oci
+*.pem
+*.key

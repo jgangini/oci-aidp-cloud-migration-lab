@@ -1,0 +1,43 @@
+# Local Codex Policy for codex-oci-aidp-cloud-migration-lab
+
+This file supplements the global `~/.codex/AGENTS.md`.
+
+Keep this file repo-specific. Do not duplicate universal rules that already live in the global policy.
+
+## Project Identity
+
+- Repo root: `D:\dev\codex-oci-aidp-cloud-migration-lab`
+- Purpose: Deploy Studio-owned OCI AI Data Platform migration laboratory.
+- Technical audience: OCI platform engineers and lab instructors.
+- Primary surfaces: Terraform, AIDP post-apply REST hook, FastAPI registration API, React admin/registration UI, nginx/Docker.
+
+## Repo Operating Defaults
+
+- Preferred validation commands: `terraform fmt -check -recursive`, `terraform validate`, `terraform test`, `pytest apps/backend/tests infra/terraform/tests`, `npm test`, `npm run build`, and `docker build`.
+- Preferred search and inspection tools: Semble first, then direct file inspection; use the official AIDP Swagger as the REST contract.
+- Default runtime or environment assumptions: OCI Provider 8.x, Terraform 1.7+, Python 3.12, Node 22, Oracle Linux 9, Default Identity Domain.
+
+## Local Validation Policy
+
+- Required checks beyond global Graphify and Sentrux: mock-provider Terraform contract, Python tests, frontend build/tests, and container health smoke test.
+- Safe shortcuts for docs-only work: no runtime checks when only prose changes.
+- Release, deploy, or approval gates: never tag/release until Terraform and all application checks pass; OCI APPLY is always an explicit external action.
+
+## Repo-Specific Friction
+
+- Sensitive paths or fragile areas: `infra/terraform/identity.tf`, `hooks/post_apply.py`, SCIM filters, cloud-init, Vault secret wiring.
+- Credentials, external systems, or approval boundaries: OCI config/key and plaintext lab secrets never enter Git, Terraform variables, artifacts, or VM metadata.
+- Noisy, slow, or expensive commands to avoid by default: live OCI APPLY and Identity Domains mutations; use provider mocks and HTTP fakes first.
+
+## Continuous Improvement Triggers
+
+- Promote a repeated friction to this local file after 2 recurrences in the same repo.
+- Promote a repeated manual sequence to a script or skill after 3 recurrences or when it is safety-critical.
+- Promote a rule to the global policy only when it is cross-repo or clearly universal.
+- Review `.codex/improvement-log.md` before large tasks and record only meaningful signal after non-trivial work.
+
+## Future Delegation Hooks
+
+- Candidate explorer roles: OCI provider schema and AIDP Swagger investigator.
+- Candidate reviewer roles: IAM/SCIM security reviewer and Terraform deployment reviewer.
+- Candidate repo-specific skills or MCPs: AIDP live acceptance and lab cleanup workflow.

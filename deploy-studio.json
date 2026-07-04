@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "project_id": "oci-aidp-cloud-migration-lab",
+  "terraform": {
+    "path": "infra/terraform",
+    "package_oci_credentials": false
+  },
+  "capabilities": {
+    "compartment_modes": ["new", "existing"],
+    "requires_genai_region": false,
+    "database_profile": "none"
+  },
+  "form": {
+    "fields": [
+      {
+        "name": "home_region",
+        "label": "OCI tenancy home region",
+        "type": "text",
+        "required": false,
+        "default": "",
+        "pattern": "^[a-z]{2}-[a-z0-9-]+-[0-9]+$",
+        "min_length": 8,
+        "max_length": 64
+      },
+      {
+        "name": "admin_username",
+        "label": "Administrator username",
+        "type": "text",
+        "required": true,
+        "default": "admin",
+        "min_length": 3,
+        "max_length": 64
+      },
+      {
+        "name": "admin_password",
+        "label": "Administrator password",
+        "type": "password",
+        "required": true,
+        "secret": true,
+        "min_length": 12,
+        "max_length": 128,
+        "transform": "pbkdf2_sha256"
+      },
+      {
+        "name": "registration_code",
+        "label": "Lab registration code",
+        "type": "password",
+        "required": true,
+        "secret": true,
+        "pattern": "^[A-Z]{4}-[0-9]{4}$",
+        "min_length": 9,
+        "max_length": 9,
+        "transform": "uppercase_pbkdf2_sha256"
+      },
+      {
+        "name": "preferred_vm_shape",
+        "label": "Preferred VM shape",
+        "type": "select",
+        "required": true,
+        "default": "VM.Standard.E5.Flex",
+        "options": [
+          {"value": "VM.Standard.E5.Flex", "label": "E5 Flex (recommended)"},
+          {"value": "VM.Standard.E4.Flex", "label": "E4 Flex"}
+        ]
+      },
+      {
+        "name": "vm_ocpus",
+        "label": "VM OCPUs",
+        "type": "number",
+        "required": true,
+        "default": 1
+      },
+      {
+        "name": "vm_memory_gbs",
+        "label": "VM memory (GB)",
+        "type": "number",
+        "required": true,
+        "default": 8
+      },
+      {
+        "name": "ssh_allowed_cidr",
+        "label": "Optional SSH CIDR",
+        "type": "text",
+        "required": false,
+        "default": ""
+      }
+    ]
+  },
+  "outputs": [
+    "application_url",
+    "admin_url",
+    "aidp_console_url",
+    "compartment_ocid",
+    "bucket_name",
+    "objectstorage_namespace",
+    "medallion_prefixes",
+    "ai_data_platform_id",
+    "default_workspace_name",
+    "developer_group_ocid",
+    "pending_group_ocid",
+    "identity_domain_url",
+    "instance_id",
+    "public_ip",
+    "vm_shape"
+  ],
+  "artifacts": ["aidp_lab_summary.json"],
+  "preflight": {
+    "entrypoint": "infra/terraform/preflight.py",
+    "timeout_seconds": 60,
+    "requires_oci_credentials": true,
+    "output_inputs": ["home_region", "preferred_vm_shape"]
+  },
+  "post_apply": {
+    "entrypoint": "infra/terraform/hooks/post_apply.py",
+    "timeout_seconds": 3600,
+    "requires_oci_credentials": true
+  }
+}
