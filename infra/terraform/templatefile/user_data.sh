@@ -40,13 +40,6 @@ use_reachable_base_images() {
     "$SOURCE_DIR/Dockerfile"
 }
 
-metadata_public_ip() {
-  curl --fail --silent --show-error --connect-timeout 2 \
-    -H "Authorization: Bearer Oracle" \
-    http://169.254.169.254/opc/v2/vnics/ | \
-    python3 -c 'import json, sys; print(next((vnic.get("publicIp") for vnic in json.load(sys.stdin) if vnic.get("publicIp")), ""))'
-}
-
 dnf -y makecache
 dnf -y install dnf-plugins-core firewalld curl git openssl python3
 systemctl stop firewalld >/dev/null 2>&1 || true
@@ -63,7 +56,9 @@ docker info >/dev/null
 install -d -m 0700 "$TLS_DIR" "$STATE_DIR"
 PUBLIC_IP=""
 for attempt in $(seq 1 12); do
-  PUBLIC_IP=$(metadata_public_ip 2>/dev/null) || PUBLIC_IP=""
+  PUBLIC_IP=$(oci-public-ip -g 2>/dev/null \
+    | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+    | tail -n 1) || PUBLIC_IP=""
   if [ -n "$PUBLIC_IP" ]; then
     break
   fi

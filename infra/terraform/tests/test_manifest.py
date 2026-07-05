@@ -56,6 +56,7 @@ def test_hook_result_matches_runner_and_manifest_contract() -> None:
 
 def test_runtime_security_contracts() -> None:
     root = Path(__file__).parents[3]
+    attributes = (root / ".gitattributes").read_text(encoding="utf-8")
     nginx = (root / "docker/nginx.conf").read_text(encoding="utf-8")
     entrypoint = (root / "docker/entrypoint.sh").read_text(encoding="utf-8")
     cloud_init = (root / "infra/terraform/templatefile/user_data.sh").read_text(encoding="utf-8")
@@ -66,6 +67,7 @@ def test_runtime_security_contracts() -> None:
     aidp = (root / "infra/terraform/e_oci_ai_data_platform.tf").read_text(encoding="utf-8")
     storage = (root / "infra/terraform/b_oci_objectstorage_bucket.tf").read_text(encoding="utf-8")
     assert "$proxy_add_x_forwarded_for" not in nginx
+    assert "*.sh text eol=lf" in attributes
     assert nginx.count("X-Forwarded-For $remote_addr") == 2
     assert "limit_req_status 429" in nginx
     assert 'return 429 \'{"detail":"Too many registration attempts"}\'' in nginx
@@ -79,10 +81,8 @@ def test_runtime_security_contracts() -> None:
     assert "retry 5 docker build" in cloud_init
     assert "tee -a /var/log/aidp-lab-bootstrap.log /dev/console" in cloud_init
     assert 'AIDP bootstrap failed with exit $status' in cloud_init
-    assert "metadata_public_ip()" in cloud_init
-    assert "http://169.254.169.254/opc/v2/vnics/" in cloud_init
-    assert 'Authorization: Bearer Oracle' in cloud_init
-    assert "PUBLIC_IP=$(metadata_public_ip" in cloud_init
+    assert "PUBLIC_IP=$(oci-public-ip -g" in cloud_init
+    assert "grep -Eo '([0-9]{1,3}\\.){3}[0-9]{1,3}'" in cloud_init
     assert "tr -cd 'A-Za-z0-9.-'" in cloud_init
     assert "IP.1 = $PUBLIC_IP" in cloud_init
     assert "DNS.1 = $FQDN" in cloud_init
