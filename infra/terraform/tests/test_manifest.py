@@ -77,8 +77,10 @@ def test_runtime_security_contracts() -> None:
     assert "public.ecr.aws/docker/library/node" in cloud_init
     assert "public.ecr.aws/docker/library/python" in cloud_init
     assert "retry 5 docker build" in cloud_init
-    assert "PUBLIC_IP=$(oci-public-ip -g" in cloud_init
-    assert "grep -Eo '([0-9]{1,3}\\.){3}[0-9]{1,3}'" in cloud_init
+    assert "metadata_public_ip()" in cloud_init
+    assert "http://169.254.169.254/opc/v2/vnics/" in cloud_init
+    assert 'Authorization: Bearer Oracle' in cloud_init
+    assert "PUBLIC_IP=$(metadata_public_ip" in cloud_init
     assert "tr -cd 'A-Za-z0-9.-'" in cloud_init
     assert "IP.1 = $PUBLIC_IP" in cloud_init
     assert "DNS.1 = $FQDN" in cloud_init
@@ -97,7 +99,7 @@ def test_runtime_security_contracts() -> None:
     assert 'variable "vm_ocpus"' not in variables
     assert 'variable "vm_memory_gbs"' not in variables
     assert identity.count("oci.home") == 7
-    assert compute.count("oci.home") == 2
+    assert compute.count("oci.home") == 3
     assert aidp.count("oci.home") == 1
     assert 'resource "time_sleep" "kms_endpoint"' in identity
     assert 'create_duration = "120s"' in identity
