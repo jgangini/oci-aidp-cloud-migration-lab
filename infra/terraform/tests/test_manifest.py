@@ -95,7 +95,7 @@ def test_runtime_security_contracts() -> None:
     assert "shape_candidates" not in compute
     assert "oci_core_shapes" not in compute
     assert compute.count("var.preferred_vm_shape") == 2
-    assert 'operating_system_version = "8"' in compute
+    assert 'operating_system_version = "9"' in compute
     assert "var._oci_instance.shape.ocpus" in compute
     assert "var._oci_instance.shape.memory_in_gbs" in compute
     assert 'name          = "Compute Instance Run Command"' in compute
