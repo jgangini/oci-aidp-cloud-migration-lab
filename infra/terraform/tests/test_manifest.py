@@ -96,6 +96,8 @@ def test_runtime_security_contracts() -> None:
     assert 'operating_system_version = "8"' in compute
     assert "var._oci_instance.shape.ocpus" in compute
     assert "var._oci_instance.shape.memory_in_gbs" in compute
+    assert 'name          = "Compute Instance Run Command"' in compute
+    assert 'desired_state = "ENABLED"' in compute
     assert 'variable "vm_ocpus"' not in variables
     assert 'variable "vm_memory_gbs"' not in variables
     assert identity.count("oci.home") == 7

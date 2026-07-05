@@ -41,6 +41,16 @@ resource "oci_core_instance" "lab" {
     source_id   = data.oci_core_images.oracle_linux.images[0].id
   }
 
+  agent_config {
+    is_management_disabled = false
+    is_monitoring_disabled = false
+
+    plugins_config {
+      name          = "Compute Instance Run Command"
+      desired_state = "ENABLED"
+    }
+  }
+
   metadata = {
     user_data = base64encode(templatefile("${path.module}/templatefile/user_data.sh", {
       admin_username           = var.admin_username
