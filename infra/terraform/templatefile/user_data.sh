@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+exec > >(tee -a /var/log/aidp-lab-bootstrap.log /dev/console) 2>&1
+trap 'status=$?; echo "AIDP bootstrap failed with exit $status"; exit "$status"' ERR
+
 APP_NAME="aidp-lab"
 SOURCE_REPO_URL="${source_repo_url}"
 SOURCE_COMMIT_SHA="${source_commit_sha}"

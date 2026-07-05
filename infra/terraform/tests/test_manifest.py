@@ -77,6 +77,8 @@ def test_runtime_security_contracts() -> None:
     assert "public.ecr.aws/docker/library/node" in cloud_init
     assert "public.ecr.aws/docker/library/python" in cloud_init
     assert "retry 5 docker build" in cloud_init
+    assert "tee -a /var/log/aidp-lab-bootstrap.log /dev/console" in cloud_init
+    assert 'AIDP bootstrap failed with exit $status' in cloud_init
     assert "metadata_public_ip()" in cloud_init
     assert "http://169.254.169.254/opc/v2/vnics/" in cloud_init
     assert 'Authorization: Bearer Oracle' in cloud_init
