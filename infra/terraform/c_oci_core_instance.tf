@@ -6,6 +6,10 @@ locals {
   availability_domain = data.oci_identity_availability_domains.lab.availability_domains[var.availability_domain_index].name
 }
 
+resource "terraform_data" "vm_release" {
+  input = var.source_commit_sha
+}
+
 data "oci_core_images" "oracle_linux" {
   compartment_id   = local.target_compartment
   operating_system = "Oracle Linux"
@@ -57,6 +61,8 @@ resource "oci_core_instance" "lab" {
   preserve_boot_volume = false
 
   lifecycle {
+    replace_triggered_by = [terraform_data.vm_release]
+
     ignore_changes = [
       source_details[0].source_id,
     ]
