@@ -18,11 +18,10 @@ CODE_PATTERN = re.compile(r"^[A-Z]{4}-[0-9]{4}$")
 EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
 
 
-class RegistrationRequest(BaseModel):
+class UserRequest(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     email: str = Field(min_length=5, max_length=254)
     password: str = Field(min_length=8, max_length=256)
-    code: str = Field(min_length=9, max_length=9)
 
     @field_validator("name")
     @classmethod
@@ -40,6 +39,10 @@ class RegistrationRequest(BaseModel):
             raise ValueError("Enter a valid email address")
         return value
 
+
+class RegistrationRequest(UserRequest):
+    code: str = Field(min_length=9, max_length=9)
+
     @field_validator("code")
     @classmethod
     def clean_code(cls, value: str) -> str:
@@ -47,6 +50,10 @@ class RegistrationRequest(BaseModel):
         if not CODE_PATTERN.fullmatch(value):
             raise ValueError("Code must match AAAA-0000")
         return value
+
+
+class AdminUserRequest(UserRequest):
+    pass
 
 
 class LoginRequest(BaseModel):
@@ -99,6 +106,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.identity_ready() or not settings.registration_code_hash:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Registration is not configured")
 
+    def require_registration_ready() -> None:
+        require_identity()
+        if not settings.aidp_console_url:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AIDP Console link is not configured")
+
     def require_admin(token: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None) -> str:
         username = verify_session(token or "", app.state.session_key)
         if username != settings.admin_username:
@@ -121,7 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/register")
     async def register(payload: RegistrationRequest, request: Request) -> JSONResponse:
-        require_identity()
+        require_registration_ready()
         if not app.state.register_limiter.allow(client_ip(request)):
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many registration attempts")
         if not verify_secret(payload.code, settings.registration_code_hash):
@@ -136,7 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except IdentityPending as exc:
             return JSONResponse(status_code=202, content={"status": "pending", "message": str(exc)})
         status_code = 201 if result.status == "created" else 200
-        return JSONResponse(status_code=status_code, content={"status": "active", "email": result.email})
+        return JSONResponse(status_code=status_code, content={"status": "active", "email": result.email, "aidp_url": settings.aidp_console_url})
 
     @app.post("/api/admin/login", status_code=204)
     async def admin_login(payload: LoginRequest, request: Request) -> Response:
@@ -168,11 +180,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def admin_session(username: str = Depends(require_admin)) -> dict[str, str]:
         return {"username": username}
 
+    @app.get("/api/admin/settings")
+    async def admin_settings(_admin: str = Depends(require_admin)) -> dict[str, str]:
+        return {"aidp_url": settings.aidp_console_url}
+
     @app.get("/api/admin/users")
     async def admin_users(_admin: str = Depends(require_admin)) -> dict[str, list[dict]]:
         require_identity()
         client = app.state.identity_factory()
         return {"users": await client.list_lab_users()}
+
+    @app.post("/api/admin/users")
+    async def admin_create_user(payload: AdminUserRequest, _admin: str = Depends(require_admin)) -> JSONResponse:
+        require_identity()
+        client = app.state.identity_factory()
+        try:
+            result = await client.register(payload.name, payload.email, payload.password)
+        except IdentityConflict as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except IdentityRejected as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        except IdentityPending as exc:
+            return JSONResponse(status_code=202, content={"status": "pending", "message": str(exc)})
+        status_code = 201 if result.status == "created" else 200
+        return JSONResponse(status_code=status_code, content={"status": "active", "email": result.email})
+
+    @app.delete("/api/admin/users/{user_id}", status_code=204)
+    async def admin_delete_user(user_id: str, _admin: str = Depends(require_admin)) -> Response:
+        require_identity()
+        try:
+            deleted = await app.state.identity_factory().delete_lab_user(user_id)
+        except IdentityConflict as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        if not deleted:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lab user not found")
+        return Response(status_code=204)
 
     return app
 

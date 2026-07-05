@@ -205,6 +205,21 @@ class IdentityClient:
             raise IdentityPending("User created; group reconciliation is pending") from exc
         return RegistrationResult("created" if created else "reconciled", user_id, email)
 
+    async def delete_lab_user(self, user_id: str) -> bool:
+        response = await self._request("GET", f"/admin/v1/Users/{user_id}")
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        if response.json().get("externalId") != self.settings.lab_marker:
+            raise IdentityConflict("Only users created by this lab can be deleted")
+        await self.remove_member(self.settings.developer_group_id, user_id)
+        await self.remove_member(self.settings.pending_group_id, user_id)
+        response = await self._request("DELETE", f"/admin/v1/Users/{user_id}")
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        return True
+
     async def healthcheck(self) -> None:
         response = await self._request(
             "GET",
@@ -258,6 +273,7 @@ class IdentityClient:
                     "email": user.get("userName", ""),
                     "status": status,
                     "active": bool(user.get("active", False)),
+                    "managed": user.get("externalId") == self.settings.lab_marker,
                 }
             )
         return sorted(users, key=lambda item: (item["status"], item["email"].lower()))

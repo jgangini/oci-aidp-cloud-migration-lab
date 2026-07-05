@@ -47,6 +47,7 @@ resource "oci_core_instance" "lab" {
       oauth_secret_ocid        = oci_vault_secret.oauth_client.id
       developer_group_id       = oci_identity_domains_group.developers.id
       pending_group_id         = oci_identity_domains_group.pending.id
+      aidp_console_url         = "https://cloud.oracle.com/ai-data-platform/ai-data-platforms/${oci_ai_data_platform_ai_data_platform.lab.id}?region=${var.region}"
       lab_marker               = local.name_prefix
       source_repo_url          = var.source_repository_url
       source_commit_sha        = var.source_commit_sha
@@ -82,6 +83,16 @@ resource "oci_identity_policy" "vm_secret" {
   description    = "Allow only the lab VM to read its OAuth secret"
   statements = [
     "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to read secret-bundles in compartment id ${local.target_compartment} where target.secret.id = '${oci_vault_secret.oauth_client.id}'"
+  ]
+}
+
+resource "oci_identity_policy" "vm_run_command" {
+  provider       = oci.home
+  compartment_id = var.tenancy_ocid
+  name           = "${local.name_prefix}-vm-run-command"
+  description    = "Allow the lab VM to execute commands only on itself"
+  statements = [
+    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id"
   ]
 }
 

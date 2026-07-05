@@ -164,6 +164,47 @@ def test_partial_group_failure_retries_idempotently() -> None:
     asyncio.run(run())
 
 
+def test_delete_lab_user_revokes_aidp_groups_before_deleting_identity() -> None:
+    events: list[tuple[str, str]] = []
+
+    class RevokingIdentity(IdentityClient):
+        async def _request(self, method: str, path: str, **_kwargs):
+            events.append((method, path))
+            if method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"id": "managed-user", "externalId": "lab"},
+                    request=httpx.Request(method, "https://identity.example.test" + path),
+                )
+            return httpx.Response(204, request=httpx.Request(method, "https://identity.example.test" + path))
+
+        async def remove_member(self, group_id: str, user_id: str) -> None:
+            events.append(("REMOVE", f"{group_id}/{user_id}"))
+
+    async def run() -> None:
+        client = RevokingIdentity(
+            Settings(
+                identity_domain_url="https://identity.example.test",
+                developer_group_id="developers",
+                pending_group_id="pending",
+                lab_marker="lab",
+            ),
+            client=httpx.AsyncClient(),
+        )
+        try:
+            assert await client.delete_lab_user("managed-user")
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert events == [
+        ("GET", "/admin/v1/Users/managed-user"),
+        ("REMOVE", "developers/managed-user"),
+        ("REMOVE", "pending/managed-user"),
+        ("DELETE", "/admin/v1/Users/managed-user"),
+    ]
+
+
 def test_admin_listing_includes_managed_user_without_group() -> None:
     class ListingIdentity(IdentityClient):
         async def _users_matching(self, filter_expression: str):

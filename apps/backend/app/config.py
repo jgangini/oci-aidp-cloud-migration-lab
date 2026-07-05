@@ -15,6 +15,7 @@ class Settings:
     identity_oauth_client_secret: str = ""
     developer_group_id: str = ""
     pending_group_id: str = ""
+    aidp_console_url: str = ""
     lab_marker: str = "aidp-lab"
     session_secret_file: str = "/var/lib/aidp-lab/session.key"
     cookie_secure: bool = True
@@ -31,6 +32,7 @@ class Settings:
             identity_oauth_client_secret=os.getenv("IDENTITY_OAUTH_CLIENT_SECRET", ""),
             developer_group_id=os.getenv("IDENTITY_DEVELOPER_GROUP_ID", ""),
             pending_group_id=os.getenv("IDENTITY_PENDING_GROUP_ID", ""),
+            aidp_console_url=os.getenv("AIDP_CONSOLE_URL", ""),
             lab_marker=os.getenv("LAB_MARKER", "aidp-lab"),
             session_secret_file=os.getenv("SESSION_SECRET_FILE", "/var/lib/aidp-lab/session.key"),
             cookie_secure=os.getenv("COOKIE_SECURE", "true").lower() not in {"0", "false", "no"},

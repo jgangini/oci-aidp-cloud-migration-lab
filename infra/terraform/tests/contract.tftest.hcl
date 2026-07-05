@@ -118,6 +118,16 @@ run "resolved_compartment_contract" {
   }
 
   assert {
+    condition = anytrue([
+      for statement in oci_identity_policy.vm_run_command.statements :
+      strcontains(statement, "use instance-agent-command-execution-family") &&
+      strcontains(statement, "compartment id ocid1.compartment.oc1..test") &&
+      strcontains(statement, "request.instance.id=target.instance.id")
+    ])
+    error_message = "VM Run Command must be restricted to the lab VM in its compartment."
+  }
+
+  assert {
     condition     = oci_core_instance.lab.shape == "VM.Standard.E5.Flex"
     error_message = "The APPLY must use the explicitly requested shape without pretending to fall back."
   }

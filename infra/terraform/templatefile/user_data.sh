@@ -107,6 +107,7 @@ IDENTITY_OAUTH_CLIENT_ID=${identity_oauth_client_id}
 OAUTH_SECRET_OCID=${oauth_secret_ocid}
 IDENTITY_DEVELOPER_GROUP_ID=${developer_group_id}
 IDENTITY_PENDING_GROUP_ID=${pending_group_id}
+AIDP_CONSOLE_URL=${aidp_console_url}
 LAB_MARKER=${lab_marker}
 SESSION_SECRET_FILE=/var/lib/aidp-lab/session.key
 COOKIE_SECURE=true
