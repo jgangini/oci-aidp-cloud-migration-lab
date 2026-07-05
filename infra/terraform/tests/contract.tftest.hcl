@@ -120,6 +120,7 @@ run "resolved_compartment_contract" {
   assert {
     condition = anytrue([
       for statement in oci_identity_policy.vm_run_command.statements :
+      strcontains(statement, "Allow any-user to use instance-agent-command-execution-family") &&
       strcontains(statement, "use instance-agent-command-execution-family") &&
       strcontains(statement, "compartment id ocid1.compartment.oc1..test") &&
       strcontains(statement, "request.instance.id=target.instance.id")

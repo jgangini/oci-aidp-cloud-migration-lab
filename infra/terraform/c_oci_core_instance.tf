@@ -96,9 +96,9 @@ resource "oci_identity_policy" "vm_run_command" {
   provider       = oci.home
   compartment_id = var.tenancy_ocid
   name           = "${local.name_prefix}-vm-run-command"
-  description    = "Allow the lab VM to execute commands only on itself"
+  description    = "Allow an instance principal to execute commands only on itself"
   statements = [
-    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id"
+    "Allow any-user to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id"
   ]
 }
 
