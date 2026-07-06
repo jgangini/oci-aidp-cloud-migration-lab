@@ -11,11 +11,11 @@
     "database_profile": "none"
   },
   "presentation": {
-    "title": "OCI AIDP Cloud Migration Lab",
-    "summary": "Deploys an OCI AI Data Platform laboratory with AIDP Workbench, one governed aidp-data bucket, Landing/Bronze/Silver/Gold prefixes, Identity Domains developer groups and a self-service HTTPS registration VM.",
-    "tags": ["AIDP Workbench", "Medallion Storage", "Identity Domains", "Object Storage", "HTTPS VM"],
-    "image": "/assets/blueprints/ai-data-platform-workbench-medallion-ba3242d5.png",
-    "image_alt": "OCI AI Data Platform Workbench medallion architecture",
+    "title": "OCI AI Data Platform Cloud Migration Lab",
+    "summary": "Deploys a governed OCI data engineering laboratory: a VCN and HTTPS VM host registration and administration, AI Data Platform provides the shared workspace and Spark compute, and a private bucket implements Landing, Bronze, Silver, and Gold data layers. Identity Domains groups and IAM policies onboard lab users with controlled access to notebooks, workflows, and governed data.",
+    "tags": ["VM", "VCN", "AI Data Platform", "Object Storage Bucket", "IAM Policies"],
+    "image": "/assets/oci-aidp-cloud-migration-lab.png",
+    "image_alt": "OCI AI Data Platform Cloud Migration Lab architecture",
     "href": "https://github.com/jgangini/oci-aidp-cloud-migration-lab"
   },
   "form": {

@@ -1,6 +1,8 @@
 # OCI AI Data Platform Cloud Migration Lab
 
-Deploy Studio package for a structured Oracle AI Data Platform lab. It creates one private Object Storage bucket with four medallion prefixes, an AIDP platform and default workspace, a registration VM, and the Identity Domain resources needed to onboard lab users.
+An end-to-end Oracle Cloud Infrastructure laboratory for learning data engineering with Oracle AI Data Platform (AIDP). It deploys a private medallion data lake, an AIDP platform and shared workspace, a shared Spark compute environment, and a self-service registration application for lab participants.
+
+The laboratory creates one governed `aidp-data-*` Object Storage bucket with `01_landing`, `02_bronze`, `03_silver`, and `04_gold` prefixes; the corresponding AIDP catalog, schemas, and external volumes; Identity Domains groups and roles for developers; and a HTTPS registration/admin VM. Each participant selects an industry and receives an individual workspace folder with synthetic CSV data, documented notebooks that move data through Landing, Bronze, Silver, and Gold, plus a workflow that runs the four notebook stages on the shared compute. Administrators can monitor users, configure the direct AIDP Workbench URL, and manage lab access.
 
 ## Safety contract
 
@@ -27,7 +29,7 @@ Required runtime values are documented in `apps/backend/.env.example`. For devel
 The development profile runs the same nginx, FastAPI and React image as the VM, but substitutes Identity Domains with in-memory users. It is intentionally local-only and cannot validate OCI policies, Vault access or AIDP permissions.
 
 ```powershell
-Copy-Item .env.dev.example .env.dev
+Copy-Item .env.example .env.dev
 docker compose -f docker-compose.dev.yml up --build -d
 ```
 
@@ -56,6 +58,8 @@ Deploy Studio creates or resolves the target compartment before starting Resourc
 
 The VM shape remains explicit per APPLY. The capacity report is a preselection, not a reservation, so capacity can change before instance creation. When the report says E5 is unavailable and E4 is available, preflight selects E4 without requiring another secret or user choice. If creation later fails because capacity changed, run a new APPLY; this package deliberately does not claim an automatic post-failure retry.
 
-## Attribution
+## License
 
-The visual language reuses small MIT-licensed branding and form/table patterns from [jgangini/ai-document-analyzer](https://github.com/jgangini/ai-document-analyzer). Oracle and Java are registered trademarks of Oracle and/or its affiliates. This community laboratory is not an Oracle-supported product.
+This project is licensed under the [MIT License](https://github.com/jgangini/oci-aidp-cloud-migration-lab/blob/main/LICENSE).
+
+OCI AIDP Cloud Migration Lab is an independent project and is not an official Oracle product. It is not affiliated with, endorsed by, or sponsored by Oracle Corporation. Oracle, OCI, and related marks are trademarks or registered trademarks of Oracle and/or its affiliates. Third-party trademarks, logos, service names, and assets remain the property of their respective owners.

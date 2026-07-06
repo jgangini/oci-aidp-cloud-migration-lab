@@ -10,7 +10,7 @@ The top-level README describes the Deploy Studio package that provisions OCI res
 
 Typical flow from the README:
 ```powershell
-Copy-Item .env.dev.example .env.dev
+Copy-Item .env.example .env.dev
 docker compose -f docker-compose.dev.yml up --build -d
 ```
 Stop it with:

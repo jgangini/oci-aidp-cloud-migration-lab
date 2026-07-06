@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", default="DEFAULT")
     parser.add_argument("--suffix", help="Explicit AIDP lab suffix when several labs exist.")
     parser.add_argument("--output", type=Path, default=Path(".env"))
-    parser.add_argument("--template", type=Path, default=Path(".env.dev.example"))
+    parser.add_argument("--template", type=Path, default=Path(".env.example"))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--self-check", action="store_true")
     return parser.parse_args()
