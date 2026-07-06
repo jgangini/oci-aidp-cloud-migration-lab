@@ -12,6 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify the release tag is reachable from main
+        run: |
+          tag_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          git fetch origin main
+          git merge-base --is-ancestor "$tag_commit" origin/main || {
+            echo "Release tags must point to commits already reachable from main."
+            exit 1
+          }
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.7
@@ -35,6 +45,12 @@ jobs:
         working-directory: infra/terraform
       - run: terraform init -backend=false && terraform validate && terraform test
         working-directory: infra/terraform
-      - run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
+      - name: Create or reuse GitHub release
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; retaining it."
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
