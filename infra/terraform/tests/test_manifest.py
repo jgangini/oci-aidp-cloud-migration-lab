@@ -30,6 +30,8 @@ def test_deploy_studio_manifest_contract() -> None:
     assert [field["name"] for field in manifest["preflight"]["runtime_fields"]] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
     assert manifest["preflight"]["output_inputs"] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
     assert (root / manifest["preflight"]["entrypoint"]).is_file()
+    assert "aidp_workbench_url" in manifest["outputs"]
+    assert "aidp_console_url" not in manifest["outputs"]
 
 
 def test_hook_result_matches_runner_and_manifest_contract() -> None:
@@ -47,7 +49,7 @@ def test_hook_result_matches_runner_and_manifest_contract() -> None:
     }
     result = module.build_success_result(context, {"catalog_key": "catalog"}, ["ready"])
     assert set(result) == {"events", "artifacts", "outputs"}
-    assert result["outputs"] == {}
+    assert result["outputs"] == {"aidp_workbench_url": ""}
     assert {item["name"] for item in result["artifacts"]} == set(manifest["artifacts"])
     assert set(result["outputs"]).issubset(manifest["outputs"])
     artifact = json.loads(base64.b64decode(result["artifacts"][0]["content_b64"]))
@@ -103,7 +105,7 @@ def test_runtime_security_contracts() -> None:
     assert 'variable "vm_ocpus"' not in variables
     assert 'variable "vm_memory_gbs"' not in variables
     assert identity.count("oci.home") == 7
-    assert compute.count("oci.home") == 3
+    assert compute.count("oci.home") == 4
     assert aidp.count("oci.home") == 1
     assert 'resource "time_sleep" "kms_endpoint"' in identity
     assert 'create_duration = "120s"' in identity
@@ -120,6 +122,9 @@ def test_runtime_security_contracts() -> None:
     assert 'regex("^[0-9a-f]{40}$"' in source_sha_block
     assert "force_destroy" in storage
     assert "prevent_destroy" not in storage
+    assert "manage datalake in compartment id ${local.target_compartment}" in compute
+    assert "AIDP_WORKBENCH_URL=${aidp_workbench_url}" in cloud_init
+    assert "AIDP_CONSOLE_URL" not in cloud_init
 
 
 def test_terraform_files_follow_select_ai_order() -> None:

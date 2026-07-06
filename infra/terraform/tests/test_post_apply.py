@@ -31,6 +31,7 @@ class FakeApi:
             "/schemas": [],
             "/volumes": [],
             "/roles": [],
+            "/workspaces/ws-key/clusters": [],
         }
 
     def list_all(self, path: str, *, params=None) -> list[dict]:
@@ -55,7 +56,7 @@ class FakeApi:
                 item["key"] = f"{payload['catalogName']}.{payload['schemaName']}.{name}"
             else:
                 item["key"] = f"{name}-key"
-            if path in {"/catalogs", "/schemas", "/volumes"}:
+            if path in {"/catalogs", "/schemas", "/volumes", "/workspaces/ws-key/clusters"}:
                 item["lifecycleState"] = "ACTIVE"
             self.resources[path].append(item)
             return post_apply.ApiResponse(201, item, {})
@@ -121,6 +122,12 @@ def test_reconcile_builds_canonical_medallion_resources(monkeypatch) -> None:
     role_queries = [params for path, params in api.list_calls if path == "/roles"]
     assert role_queries and all(query == {"displayName": "AIDP_LAB_DEVELOPER"} for query in role_queries)
     assert any("Developer group" in event for event in events)
+    cluster_payloads = [payload for method, path, payload, _ in api.calls if method == "POST" and path.endswith("/clusters")]
+    assert cluster_payloads[0]["displayName"] == "aidp-lab-shared-compute"
+    assert cluster_payloads[0]["type"] == "USER"
+    assert cluster_payloads[0]["driverConfig"]["driverShape"] == "amd.generic"
+    assert cluster_payloads[0]["workerConfig"]["maxWorkerCount"] == 10
+    assert reconciled["shared_compute_key"] == "aidp-lab-shared-compute-key"
 
 
 def test_existing_incompatible_catalog_is_never_replaced() -> None:
@@ -390,3 +397,13 @@ def test_application_health_uses_self_signed_https(monkeypatch) -> None:
     post_apply.wait_for_application("https://192.0.2.10")
     assert observed["url"] == "https://192.0.2.10/api/health"
     assert observed["verify"] is False
+
+
+def test_workbench_url_uses_oci_web_socket_endpoint() -> None:
+    assert post_apply.workbench_url(
+        {
+            "aidp_web_socket_endpoint": "1yjfbzshsbc4glmdavcord",
+            "tenancy_name": "oci-deploy-1",
+            "identity_domain_name": "Default",
+        }
+    ) == "https://1yjfbzshsbc4glmdavcord.datalake.oci.oraclecloud.com#?tenant=oci-deploy-1&domain=Default"

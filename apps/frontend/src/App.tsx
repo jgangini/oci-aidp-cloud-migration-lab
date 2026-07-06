@@ -156,36 +156,34 @@ function ConfirmModal({
   );
 }
 
-function secureRandomInt(limit: number) {
-  const ceiling = Math.floor(0x100000000 / limit) * limit;
-  const value = new Uint32Array(1);
-  do {
-    crypto.getRandomValues(value);
-  } while (value[0] >= ceiling);
-  return value[0] % limit;
-}
+function Toast({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    if (!message) return undefined;
+    const timeout = window.setTimeout(onDismiss, 4_000);
+    return () => window.clearTimeout(timeout);
+  }, [message, onDismiss]);
 
-function generatePassword() {
-  const groups = [
-    "ABCDEFGHJKLMNPQRSTUVWXYZ",
-    "abcdefghijkmnopqrstuvwxyz",
-    "23456789",
-    "!@#$%*-_",
-  ];
-  const characters = groups.map(
-    (group) => group[secureRandomInt(group.length)],
+  if (!message) return null;
+  return createPortal(
+    <div className="toast" role="status" aria-live="polite">
+      <span>{message}</span>
+      <button
+        className="toast-dismiss"
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss notification"
+      >
+        ×
+      </button>
+    </div>,
+    document.body,
   );
-  const alphabet = groups.join("");
-  while (characters.length < 18)
-    characters.push(alphabet[secureRandomInt(alphabet.length)]);
-  for (let index = characters.length - 1; index > 0; index -= 1) {
-    const swap = secureRandomInt(index + 1);
-    [characters[index], characters[swap]] = [
-      characters[swap],
-      characters[index],
-    ];
-  }
-  return characters.join("");
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -239,42 +237,6 @@ function AdminLoginIcon() {
         strokeLinejoin="round"
         d="M2 12.88v-1.76c0-1.04.85-1.9 1.9-1.9 1.81 0 2.55-1.28 1.64-2.85a1.9 1.9 0 0 1 .7-2.59l1.73-.99a1.9 1.9 0 0 1 2.28.6l.11.19c.9 1.57 2.38 1.57 3.29 0l.11-.19a1.9 1.9 0 0 1 2.28-.6l1.73.99a1.9 1.9 0 0 1 .7 2.59c-.91 1.57-.17 2.85 1.64 2.85 1.04 0 1.9.85 1.9 1.9v1.76c0 1.04-.85 1.9-1.9 1.9-1.81 0-2.55 1.28-1.64 2.85a1.9 1.9 0 0 1-.7 2.59l-1.73.99a1.9 1.9 0 0 1-2.28-.6l-.11-.19c-.9-1.57-2.38-1.57-3.29 0l-.11.19a1.9 1.9 0 0 1-2.28.6l-1.73-.99a1.9 1.9 0 0 1-.7-2.59c.91-1.57.17-2.85-1.64-2.85-1.05 0-1.9-.85-1.9-1.9Z"
       />
-    </svg>
-  );
-}
-
-function WandIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      aria-hidden="true"
-    >
-      <path d="M3.844 7.922a2.886 2.886 0 0 1 4.078-4.078l12.233 12.233a2.886 2.886 0 0 1-4.078 4.078L3.844 7.922Z" />
-      <path strokeLinecap="round" d="m6 10 4-4" />
-      <path d="M16.1 2.307c.161-.409.739-.409.9 0l.43 1.095c.049.125.148.224.273.273l1.09.432c.409.161.409.741 0 .903l-1.09.432a.458.458 0 0 0-.273.273L17 6.811c-.161.409-.739.409-.9 0l-.43-1.095a.458.458 0 0 0-.273-.273l-1.091-.432a.487.487 0 0 1 0-.903l1.091-.432a.458.458 0 0 0 .273-.273l.43-1.096ZM19.967 9.129c.161-.409.739-.409.899 0l.157.4c.05.125.148.224.273.273l.398.158c.408.161.408.741 0 .903l-.398.157a.458.458 0 0 0-.273.273l-.157.4c-.16.409-.738.409-.9 0l-.156-.4a.458.458 0 0 0-.273-.273l-.398-.157a.487.487 0 0 1 0-.903l.398-.158a.458.458 0 0 0 .273-.273l.156-.4ZM5.133 15.307c.161-.409.739-.409.9 0l.157.4c.05.125.148.224.273.273l.398.157c.408.162.408.742 0 .903l-.398.158a.458.458 0 0 0-.273.273l-.157.399c-.161.41-.739.41-.9 0l-.157-.399a.458.458 0 0 0-.273-.273l-.398-.158a.487.487 0 0 1 0-.903l.398-.157a.458.458 0 0 0 .273-.273l.157-.4Z" />
-    </svg>
-  );
-}
-
-function EyeIcon({ hidden }: { hidden: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      aria-hidden="true"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M2.5 12s3.4-5 9.5-5 9.5 5 9.5 5-3.4 5-9.5 5-9.5-5-9.5-5Z"
-      />
-      <circle cx="12" cy="12" r="2.5" />
-      {hidden && <path strokeLinecap="round" d="M4 4l16 16" />}
     </svg>
   );
 }
@@ -339,6 +301,39 @@ function TrashIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
         d="M5 7h14m-9 4v6m4-6v6M9 7l.7-3h4.6l.7 3m-8.2 0 .7 13h9.2l.7-13"
+      />
+    </svg>
+  );
+}
+
+function AccessReadyIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="m5 12.5 4.1 4.1L19 6.7"
+      />
+      <circle cx="12" cy="12" r="9" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M17.5 14H19C20.1 14 21 13.1 21 12V5C21 3.9 20.1 3 19 3H12C10.9 3 10 3.9 10 5v1.5M5 10h7c1.1 0 2 .9 2 2v7c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2v-7c0-1.1.9-2 2-2Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -456,10 +451,9 @@ function Shell({
 }
 
 function RegisterPage() {
-  const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [form, setForm] = useState({ name: "", email: "", industry: "banking" });
   const [codeSlots, setCodeSlots] = useState<string[]>(() => Array(8).fill(""));
   const codeInputs = useRef<Array<HTMLInputElement | null>>([]);
-  const [passwordVisible, setPasswordVisible] = useState(false);
   const [state, setState] = useState<{
     phase: "idle" | "processing" | "ready" | "error";
     message: string;
@@ -541,17 +535,14 @@ function RegisterPage() {
         });
         await new Promise((resolve) => window.setTimeout(resolve, 2_500));
       }
-      if (!result.aidp_url)
-        throw new Error("AIDP is ready, but its console link is unavailable.");
-      setForm((current) => ({ ...current, password: "" }));
+      setForm({ name: "", email: "", industry: "banking" });
       setCodeSlots(Array(8).fill(""));
       setState({
         phase: "ready",
-        message: "Your lab account is ready.",
+        message: result.message || "Your lab account is ready.",
         aidpUrl: result.aidp_url,
       });
     } catch (error) {
-      setForm((current) => ({ ...current, password: "" }));
       setCodeSlots(Array(8).fill(""));
       setState({
         phase: "error",
@@ -631,40 +622,17 @@ function RegisterPage() {
             />
           </label>
           <label>
-            Password
-            <span className="password-control">
-              <input
-                type={passwordVisible ? "text" : "password"}
-                autoComplete="new-password"
-                value={form.password}
-                onChange={(e) => update("password", e.target.value)}
-                minLength={8}
-                maxLength={256}
-                required
-              />
-              <span className="password-actions">
-                <button
-                  type="button"
-                  className="password-action"
-                  onClick={() => update("password", generatePassword())}
-                  aria-label="Generate password"
-                  title="Generate password"
-                >
-                  <WandIcon />
-                </button>
-                <button
-                  type="button"
-                  className="password-action"
-                  onClick={() => setPasswordVisible((current) => !current)}
-                  aria-label={
-                    passwordVisible ? "Hide password" : "Show password"
-                  }
-                  title={passwordVisible ? "Hide password" : "Show password"}
-                >
-                  <EyeIcon hidden={passwordVisible} />
-                </button>
-              </span>
-            </span>
+            Industry
+            <select
+              value={form.industry}
+              onChange={(event) => update("industry", event.target.value)}
+              required
+            >
+              <option value="banking">Banking</option>
+              <option value="telecommunications">Telecommunications</option>
+              <option value="retail">Retail</option>
+              <option value="healthcare">Healthcare</option>
+            </select>
           </label>
           <fieldset className="registration-code">
             <legend>Registration code</legend>
@@ -733,32 +701,44 @@ function RegisterPage() {
         </section>
       )}
       {state.phase === "ready" && (
-        <section
-          className="registration-overlay"
-          role="status"
-          aria-live="polite"
-        >
-          <div className="registration-result registration-result-ready">
-            <p className="eyebrow">Access ready</p>
-            <h2>Your lab account is ready</h2>
-            <p>
-              Open AI Data Platform to start working in the shared workspace.
-            </p>
-            <a
-              className="result-link"
-              href={state.aidpUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Open AI Data Platform
-            </a>
-            <button
-              className="secondary"
-              type="button"
-              onClick={() => setState({ phase: "idle", message: "" })}
-            >
-              Return to registration
-            </button>
+        <section className="registration-overlay">
+          <div
+            className="registration-result registration-result-ready"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="registration-ready-title"
+          >
+            <div className="confirm-content">
+              <div className="confirm-icon">
+                <AccessReadyIcon />
+              </div>
+              <p className="eyebrow">Access ready</p>
+              <h2 id="registration-ready-title">Your lab account is ready</h2>
+              <p>{state.message}</p>
+            </div>
+            <footer>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => setState({ phase: "idle", message: "" })}
+              >
+                Return to registration
+              </button>
+              {state.aidpUrl ? (
+                <a
+                  className="result-link"
+                  href={state.aidpUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open AI Data Platform
+                </a>
+              ) : (
+                <button className="secondary" type="button" onClick={() => setState({ phase: "idle", message: "" })}>
+                  Close
+                </button>
+              )}
+            </footer>
           </div>
         </section>
       )}
@@ -829,21 +809,23 @@ function AdminUsers() {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
+  const [tableError, setTableError] = useState("");
   const [message, setMessage] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState({ name: "", email: "", password: "" });
+  const [draft, setDraft] = useState({ name: "", email: "", industry: "banking" });
   const [pendingDelete, setPendingDelete] = useState<LabUser | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [logoutOpen, setLogoutOpen] = useState(false);
   async function loadUsers() {
+    setTableError("");
     try {
       setUsers((await api<{ users: LabUser[] }>("/api/admin/users")).users);
     } catch (reason) {
       if (reason instanceof ApiRequestError && reason.status === 401)
         window.location.assign("/admin/login");
       else
-        setError(
+        setTableError(
           reason instanceof Error ? reason.message : "Unable to load users",
         );
     }
@@ -868,7 +850,7 @@ function AdminUsers() {
         "/api/admin/users",
         { method: "POST", body: JSON.stringify(draft) },
       );
-      setDraft({ name: "", email: "", password: "" });
+      setDraft({ name: "", email: "", industry: "banking" });
       setCreateOpen(false);
       setMessage(
         result.status === "pending"
@@ -912,6 +894,21 @@ function AdminUsers() {
       <Shell adminLink={false} onSignOut={() => setLogoutOpen(true)}>
         <section className="admin">
           <div className="admin-panel">
+            <div className="admin-panel-heading">
+              <h1>Users</h1>
+              <button
+                className="create-user"
+                type="button"
+                aria-expanded={createOpen}
+                onClick={() => {
+                  setCreateOpen((current) => !current);
+                  setError("");
+                }}
+              >
+                <PlusIcon />
+                <span>Users</span>
+              </button>
+            </div>
             <div className="admin-toolbar">
               <form
                 className="search"
@@ -948,17 +945,6 @@ function AdminUsers() {
                 >
                   <RefreshIcon />
                 </button>
-                <button
-                  className="create-user"
-                  type="button"
-                  onClick={() => {
-                    setCreateOpen((current) => !current);
-                    setError("");
-                  }}
-                >
-                  <PlusIcon />
-                  <span>User</span>
-                </button>
               </div>
             </div>
             {createOpen && (
@@ -993,20 +979,22 @@ function AdminUsers() {
                   />
                 </label>
                 <label>
-                  Password
-                  <input
-                    type="password"
-                    value={draft.password}
+                  Industry
+                  <select
+                    value={draft.industry}
                     onChange={(event) =>
                       setDraft((current) => ({
                         ...current,
-                        password: event.target.value,
+                        industry: event.target.value,
                       }))
                     }
-                    minLength={8}
-                    maxLength={256}
                     required
-                  />
+                  >
+                    <option value="banking">Banking</option>
+                    <option value="telecommunications">Telecommunications</option>
+                    <option value="retail">Retail</option>
+                    <option value="healthcare">Healthcare</option>
+                  </select>
                 </label>
                 <div className="admin-form-actions">
                   <button
@@ -1022,14 +1010,9 @@ function AdminUsers() {
                 </div>
               </form>
             )}
-            {error && (
+            {createOpen && error && (
               <p className="notice error" role="alert">
                 {error}
-              </p>
-            )}
-            {message && (
-              <p className="notice success" role="status">
-                {message}
               </p>
             )}
             <div className="table-wrap">
@@ -1044,7 +1027,14 @@ function AdminUsers() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map((user, index) => (
+                  {tableError ? (
+                    <tr>
+                      <td colSpan={5} className="table-error" role="alert">
+                        {tableError} Refresh and try again.
+                      </td>
+                    </tr>
+                  ) : (
+                    visible.map((user, index) => (
                     <tr key={user.id}>
                       <td>
                         <span className="row-index">
@@ -1080,8 +1070,9 @@ function AdminUsers() {
                         </button>
                       </td>
                     </tr>
-                  ))}
-                  {!visible.length && (
+                    ))
+                  )}
+                  {!tableError && !visible.length && (
                     <tr>
                       <td colSpan={5} className="empty">
                         No matching lab users.
@@ -1094,6 +1085,7 @@ function AdminUsers() {
           </div>
         </section>
       </Shell>
+      <Toast message={message} onDismiss={() => setMessage("")} />
       <ConfirmModal
         open={Boolean(pendingDelete)}
         kind="delete"
@@ -1123,15 +1115,14 @@ function AdminUsers() {
 function AdminSettings() {
   const [aidpUrl, setAidpUrl] = useState("");
   const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
+  const urlRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     void api<{ aidp_url: string }>("/api/admin/settings")
       .then((result) => setAidpUrl(result.aidp_url))
       .catch((reason) => {
         if (reason instanceof ApiRequestError && reason.status === 401)
           window.location.assign("/admin/login");
-        // ponytail: legacy deployed backends lack this route; use the OCI landing page until the exact deep link is available.
-        else if (reason instanceof ApiRequestError && reason.status === 404)
-          setAidpUrl("https://cloud.oracle.com/ai-data-platform/");
         else
           setError(
             reason instanceof Error
@@ -1143,6 +1134,32 @@ function AdminSettings() {
   async function logout() {
     await api("/api/admin/logout", { method: "POST" });
     window.location.assign("/");
+  }
+  async function copyAidpUrl() {
+    if (!aidpUrl) return;
+    try {
+      await navigator.clipboard.writeText(aidpUrl);
+    } catch {
+      urlRef.current?.select();
+      if (!document.execCommand("copy")) {
+        setError("Unable to copy the AI Data Platform URL.");
+        return;
+      }
+    }
+    setToast("AI Data Platform URL copied.");
+  }
+  async function saveAidpUrl() {
+    setError("");
+    try {
+      const result = await api<{ aidp_url: string }>("/api/admin/settings", {
+        method: "PUT",
+        body: JSON.stringify({ aidp_url: aidpUrl }),
+      });
+      setAidpUrl(result.aidp_url);
+      setToast("AI Data Platform URL saved.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to save settings");
+    }
   }
   return (
     <Shell adminLink={false} onSignOut={logout}>
@@ -1166,12 +1183,25 @@ function AdminSettings() {
           </div>
           <label className="settings-field">
             AI Data Platform URL
-            <input
-              value={aidpUrl}
-              readOnly
-              aria-label="AI Data Platform URL"
-              placeholder="Loading configuration…"
-            />
+            <span className="settings-url-control">
+              <input
+                ref={urlRef}
+                value={aidpUrl}
+                onChange={(event) => setAidpUrl(event.target.value)}
+                aria-label="AI Data Platform URL"
+                placeholder="Loading configuration…"
+              />
+              <button
+                type="button"
+                className="copy-url"
+                onClick={() => void copyAidpUrl()}
+                disabled={!aidpUrl}
+                aria-label="Copy AI Data Platform URL"
+                title="Copy AI Data Platform URL"
+              >
+                <CopyIcon />
+              </button>
+            </span>
             {aidpUrl && (
               <a
                 className="settings-link"
@@ -1183,6 +1213,9 @@ function AdminSettings() {
               </a>
             )}
           </label>
+          <button type="button" className="settings-save" onClick={() => void saveAidpUrl()}>
+            Save URL
+          </button>
           {error && (
             <p className="notice error" role="alert">
               {error}
@@ -1190,6 +1223,7 @@ function AdminSettings() {
           )}
         </div>
       </section>
+      <Toast message={toast} onDismiss={() => setToast("")} />
     </Shell>
   );
 }

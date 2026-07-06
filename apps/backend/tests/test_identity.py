@@ -43,7 +43,7 @@ def test_group_user_listing_paginates() -> None:
     assert starts == [1, 101]
 
 
-def test_identity_domain_password_rejection_is_safe() -> None:
+def test_identity_domain_rejection_is_safe() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert json.loads(request.content)["name"] == {
@@ -51,7 +51,8 @@ def test_identity_domain_password_rejection_is_safe() -> None:
             "givenName": "Ada",
             "familyName": "Ada",
         }
-        return httpx.Response(400, json={"detail": "Password policy rejected the password"})
+        assert "password" not in json.loads(request.content)
+        return httpx.Response(400, json={"detail": "Identity Domains rejected the user"})
 
     async def run() -> None:
         client = IdentityClient(
@@ -61,14 +62,43 @@ def test_identity_domain_password_rejection_is_safe() -> None:
         client._token = "test-token"
         client._token_refresh_at = float("inf")
         try:
-            await client.create_user("Ada", "ada@example.com", "invalid-password")
+            await client.create_user("Ada", "ada@example.com")
         except IdentityRejected as exc:
-            assert "Password policy" in str(exc)
+            assert "Identity Domains" in str(exc)
         else:
             raise AssertionError("Identity Domains 400 must become IdentityRejected")
         await client.close()
 
     asyncio.run(run())
+
+
+def test_created_user_receives_identity_activation_without_a_password() -> None:
+    requests: list[tuple[str, str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        requests.append((request.method, request.url.path, body))
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "managed-user"})
+        return httpx.Response(200)
+
+    async def run() -> None:
+        client = IdentityClient(
+            Settings(identity_domain_url="https://identity.example.test", lab_marker="lab"),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        client._token = "test-token"
+        client._token_refresh_at = float("inf")
+        assert (await client.create_user("Ada Lovelace", "ada@example.com"))["id"] == "managed-user"
+        await client.close()
+
+    asyncio.run(run())
+    assert "password" not in requests[0][2]
+    assert requests[1] == (
+        "PUT",
+        "/admin/v1/UserActivationInitiator/managed-user",
+        {"schemas": ["urn:ietf:params:scim:schemas:oracle:idcs:UserActivationInitiator"]},
+    )
 
 
 def test_unmanaged_existing_account_is_never_modified() -> None:
@@ -100,7 +130,7 @@ def test_unmanaged_existing_account_is_never_modified() -> None:
         client._token = "test-token"
         client._token_refresh_at = float("inf")
         try:
-            await client.register("Ada", "ada@example.com", "valid-password")
+            await client.register("Ada", "ada@example.com")
         except IdentityConflict:
             pass
         else:
@@ -150,13 +180,13 @@ def test_partial_group_failure_retries_idempotently() -> None:
     async def run() -> None:
         client = PartialIdentity()
         try:
-            await client.register("Ada", "ada@example.com", "valid-password")
+            await client.register("Ada", "ada@example.com")
         except IdentityPending:
             pass
         else:
             raise AssertionError("first partial failure must return pending")
         assert client.pending and not client.developer
-        result = await client.register("Ada", "ada@example.com", "valid-password")
+        result = await client.register("Ada", "ada@example.com")
         assert result.status == "reconciled"
         assert client.developer and not client.pending
         await client.close()
@@ -284,7 +314,7 @@ def test_concurrent_create_409_waits_for_managed_user_and_continues(monkeypatch)
         )
         client._token = "test-token"
         client._token_refresh_at = float("inf")
-        result = await client.register("Ada", "ada@example.com", "valid-password")
+        result = await client.register("Ada", "ada@example.com")
         assert result.status == "active"
         await client.close()
 
@@ -324,7 +354,7 @@ def test_concurrent_create_409_rereads_foreign_user_as_conflict(monkeypatch) -> 
         client._token = "test-token"
         client._token_refresh_at = float("inf")
         try:
-            await client.register("Ada", "ada@example.com", "valid-password")
+            await client.register("Ada", "ada@example.com")
         except IdentityConflict:
             pass
         else:
@@ -359,7 +389,7 @@ def test_concurrent_create_409_exhausts_consistency_window(monkeypatch) -> None:
         client._token = "test-token"
         client._token_refresh_at = float("inf")
         try:
-            await client.register("Ada", "ada@example.com", "valid-password")
+            await client.register("Ada", "ada@example.com")
         except IdentityConflict:
             pass
         else:
@@ -393,7 +423,7 @@ def test_pending_removal_failure_stays_pending_on_retry() -> None:
             client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))),
         )
         try:
-            await client.register("Ada", "ada@example.com", "valid-password")
+            await client.register("Ada", "ada@example.com")
         except IdentityPending:
             pass
         else:

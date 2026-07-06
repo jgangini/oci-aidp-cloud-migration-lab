@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import configparser
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ from oci._vendor import requests
 API_VERSION = "20260430"
 CATALOG_NAME = "aidp_lab"
 ROLE_NAME = "AIDP_LAB_DEVELOPER"
+SHARED_COMPUTE_NAME = "aidp-lab-shared-compute"
 LAYERS = ("landing", "bronze", "silver", "gold")
 RESOURCE_WAIT_ATTEMPTS = 120
 
@@ -259,19 +261,33 @@ def ensure_action(
     raise ReconcileError(f"AIDP action {action_path} did not converge to the requested values")
 
 
-def build_signer(config_path: str, key_path: str) -> Any:
+def load_oci_config(config_path: str, key_path: str) -> dict[str, Any]:
     import oci
 
-    config = oci.config.from_file(config_path)
+    parser = configparser.ConfigParser()
+    if not parser.read(config_path, encoding="utf-8") or "DEFAULT" not in parser:
+        raise ReconcileError("OCI config is missing the DEFAULT profile")
+    config = dict(parser["DEFAULT"])
+    config["key_file"] = key_path
     required = ("tenancy", "user", "fingerprint")
     missing = [name for name in required if not config.get(name)]
     if missing:
         raise ReconcileError(f"OCI config is missing required fields: {', '.join(missing)}")
+    try:
+        oci.config.validate_config(config)
+    except Exception as exc:
+        raise ReconcileError("OCI config could not be validated with the supplied private key") from exc
+    return config
+
+
+def build_signer(config: dict[str, Any]) -> Any:
+    import oci
+
     return oci.signer.Signer(
         tenancy=config["tenancy"],
         user=config["user"],
         fingerprint=config["fingerprint"],
-        private_key_file_location=key_path,
+        private_key_file_location=config["key_file"],
         pass_phrase=config.get("pass_phrase"),
     )
 
@@ -377,6 +393,38 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
 
     permission_principal = {"type": "ROLE", "targets": [ROLE_NAME]}
     workspace_key = str(workspace["key"])
+    shared_compute, compute_created = ensure_resource(
+        api,
+        f"/workspaces/{workspace_key}/clusters",
+        "shared compute",
+        SHARED_COMPUTE_NAME,
+        {
+            "type": "USER",
+            "displayName": SHARED_COMPUTE_NAME,
+            "description": "Quickstart-equivalent shared Spark compute for AIDP lab workflows",
+            "driverConfig": {
+                "driverShape": "amd.generic",
+                "driverShapeConfig": {"ocpus": 2, "memoryInGBs": 32},
+            },
+            "workerConfig": {
+                "workerShape": "amd.generic",
+                "workerShapeConfig": {"ocpus": 2, "memoryInGBs": 32},
+                "minWorkerCount": 1,
+                "maxWorkerCount": 10,
+            },
+            "autoTerminationMinutes": 60,
+            "clusterRuntimeConfig": {
+                "type": "SPARK",
+                "sparkVersion": "3.5.0",
+                "sparkAdvancedConfigurations": {},
+                "sparkEnvVariables": {},
+                "initScripts": [],
+            },
+        },
+        {},
+        wait_for_active=True,
+    )
+    events.append(f"Shared compute {SHARED_COMPUTE_NAME} {'created' if compute_created else 'reused'}")
     ensure_action(
         api,
         "POST",
@@ -411,6 +459,7 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
     return (
         {
             "workspace_key": workspace_key,
+            "shared_compute_key": shared_compute.get("key"),
             "catalog_key": catalog_key,
             "schema_keys": {name: item.get("key") for name, item in schema_resources.items()},
             "volume_keys": {name: item.get("key") for name, item in volume_resources.items()},
@@ -418,6 +467,20 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
         },
         events,
     )
+
+
+def workbench_url(outputs: dict[str, Any]) -> str:
+    endpoint = str(outputs.get("aidp_web_socket_endpoint") or "").strip()
+    tenancy = str(outputs.get("tenancy_name") or "").strip()
+    domain = str(outputs.get("identity_domain_name") or "Default").strip()
+    if not endpoint or not tenancy:
+        return ""
+    host = endpoint.split("://", 1)[-1].split("/", 1)[0]
+    if not host:
+        return ""
+    if not host.endswith(".datalake.oci.oraclecloud.com"):
+        host = f"{host}.datalake.oci.oraclecloud.com"
+    return f"https://{host}#?tenant={tenancy}&domain={domain}"
 
 
 def wait_for_application(application_url: str, *, attempts: int = 60) -> None:
@@ -436,7 +499,26 @@ def wait_for_application(application_url: str, *, attempts: int = 60) -> None:
     raise ReconcileError("Registration application did not become healthy over HTTPS")
 
 
-def build_success_result(context: dict[str, Any], reconciled: dict[str, Any], messages: list[str]) -> dict[str, Any]:
+def resolve_workbench_url(outputs: dict[str, Any], config: dict[str, Any], signer: Any) -> str:
+    direct_url = workbench_url(outputs)
+    if direct_url:
+        return direct_url
+    try:
+        import oci
+
+        platform = oci.ai_data_platform.AiDataPlatformClient(config, signer=signer).get_ai_data_platform(
+            str(outputs["ai_data_platform_id"])
+        ).data
+        enriched_outputs = {**outputs, "aidp_web_socket_endpoint": getattr(platform, "web_socket_endpoint", "")}
+        return workbench_url(enriched_outputs)
+    except Exception:
+        # ponytail: an endpoint can appear after the Workbench is active; Settings remains the admin fallback.
+        return ""
+
+
+def build_success_result(
+    context: dict[str, Any], reconciled: dict[str, Any], messages: list[str], aidp_url: str = ""
+) -> dict[str, Any]:
     summary = {
         "schema_version": 1,
         "deployment_id": context["deployment_id"],
@@ -452,7 +534,7 @@ def build_success_result(context: dict[str, Any], reconciled: dict[str, Any], me
                 "content_b64": base64.b64encode((json.dumps(summary, indent=2, sort_keys=True) + "\n").encode()).decode(),
             }
         ],
-        "outputs": {},
+        "outputs": {"aidp_workbench_url": aidp_url},
     }
 
 
@@ -467,12 +549,16 @@ def main() -> int:
         config_path = os.environ["DEPLOY_STUDIO_OCI_CONFIG"]
         key_path = os.environ["DEPLOY_STUDIO_OCI_KEY"]
         outputs = context["terraform_outputs"]
-        signer = build_signer(config_path, key_path)
+        oci_config = load_oci_config(config_path, key_path)
+        signer = build_signer(oci_config)
         api = AidpApi(context["region"], outputs["ai_data_platform_id"], signer, context["deployment_id"])
         reconciled, messages = reconcile(api, outputs)
+        aidp_url = resolve_workbench_url(outputs, oci_config, signer)
+        if not aidp_url:
+            messages.append("Workbench endpoint is not published yet; configure the direct URL in Settings when available")
         wait_for_application(str(outputs["application_url"]))
         messages.append("Registration application is healthy over HTTPS")
-        write_result(output_path, build_success_result(context, reconciled, messages))
+        write_result(output_path, build_success_result(context, reconciled, messages, aidp_url))
         return 0
     except (KeyError, OSError, ValueError, ReconcileError) as exc:
         write_result(output_path, {"events": [{"level": "error", "message": str(exc)}], "artifacts": [], "outputs": {}})

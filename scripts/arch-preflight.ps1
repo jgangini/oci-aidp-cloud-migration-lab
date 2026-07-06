@@ -8,9 +8,11 @@ try {
     if (Test-Path ".\graphify-out\GRAPH_REPORT.md") {
         Get-Content ".\graphify-out\GRAPH_REPORT.md" -TotalCount 80
     }
-    if (Test-Path ".\.sentrux\rules.toml") {
+    if (Get-Command sentrux -ErrorAction SilentlyContinue) {
         sentrux gate --save .
-        sentrux check .
+        if (Test-Path ".\.sentrux\rules.toml") {
+            sentrux check .
+        }
     }
     Write-Host "Architecture preflight complete."
 }

@@ -8,9 +8,22 @@ output "admin_url" {
   value       = "https://${data.oci_core_vnic.lab.public_ip_address}/admin/users"
 }
 
-output "aidp_console_url" {
-  description = "OCI Console deep link for the AIDP platform."
-  value       = "https://cloud.oracle.com/ai-data-platform/ai-data-platforms/${oci_ai_data_platform_ai_data_platform.lab.id}?region=${var.region}"
+output "aidp_workbench_url" {
+  description = "Direct OCI AI Data Platform Workbench URL when OCI exposes the WebSocket endpoint."
+  value       = local.aidp_workbench_url
+}
+
+output "aidp_web_socket_endpoint" {
+  description = "AIDP WebSocket endpoint used to build the direct Workbench URL."
+  value       = local.aidp_web_socket_endpoint
+}
+
+output "tenancy_name" {
+  value = data.oci_identity_tenancy.current.name
+}
+
+output "identity_domain_name" {
+  value = local.default_domain.display_name
 }
 
 output "compartment_ocid" {

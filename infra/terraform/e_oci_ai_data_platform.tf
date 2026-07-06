@@ -32,3 +32,14 @@ resource "oci_ai_data_platform_ai_data_platform" "lab" {
 
   depends_on = [oci_identity_policy.aidp_service]
 }
+
+data "oci_identity_tenancy" "current" {
+  tenancy_id = var.tenancy_ocid
+}
+
+locals {
+  aidp_web_socket_endpoint = try(oci_ai_data_platform_ai_data_platform.lab.web_socket_endpoint, "")
+  aidp_endpoint_host       = element(split("/", trimprefix(trimprefix(local.aidp_web_socket_endpoint, "https://"), "wss://")), 0)
+  aidp_workbench_host      = local.aidp_endpoint_host == "" ? "" : (endswith(local.aidp_endpoint_host, ".datalake.oci.oraclecloud.com") ? local.aidp_endpoint_host : "${local.aidp_endpoint_host}.datalake.oci.oraclecloud.com")
+  aidp_workbench_url       = local.aidp_workbench_host == "" ? "" : "https://${local.aidp_workbench_host}#?tenant=${data.oci_identity_tenancy.current.name}&domain=${local.default_domain.display_name}"
+}

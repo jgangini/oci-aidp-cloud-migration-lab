@@ -60,7 +60,10 @@ resource "oci_core_instance" "lab" {
       oauth_secret_ocid        = oci_vault_secret.oauth_client.id
       developer_group_id       = oci_identity_domains_group.developers.id
       pending_group_id         = oci_identity_domains_group.pending.id
-      aidp_console_url         = "https://cloud.oracle.com/ai-data-platform/ai-data-platforms/${oci_ai_data_platform_ai_data_platform.lab.id}?region=${var.region}"
+      aidp_workbench_url       = local.aidp_workbench_url
+      aidp_platform_id         = oci_ai_data_platform_ai_data_platform.lab.id
+      aidp_workspace_name      = oci_ai_data_platform_ai_data_platform.lab.default_workspace_name
+      aidp_region              = var.region
       lab_marker               = local.name_prefix
       source_repo_url          = var.source_repository_url
       source_commit_sha        = var.source_commit_sha
@@ -108,6 +111,16 @@ resource "oci_identity_policy" "vm_run_command" {
   description    = "Allow an instance principal to execute commands only on itself"
   statements = [
     "Allow any-user to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id"
+  ]
+}
+
+resource "oci_identity_policy" "vm_aidp_runtime" {
+  provider       = oci.home
+  compartment_id = var.tenancy_ocid
+  name           = "${local.name_prefix}-vm-aidp-runtime"
+  description    = "Allow the lab VM to provision and clean shared AIDP tutorial material"
+  statements = [
+    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to manage datalake in compartment id ${local.target_compartment}"
   ]
 }
 

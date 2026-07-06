@@ -39,6 +39,11 @@ override_data {
 }
 
 override_data {
+  target = data.oci_identity_tenancy.current
+  values = { name = "oci-deploy-1" }
+}
+
+override_data {
   target = data.oci_core_images.oracle_linux
   values = { images = [{ id = "ocid1.image.test" }] }
 }
@@ -131,6 +136,14 @@ run "resolved_compartment_contract" {
   assert {
     condition     = oci_core_instance.lab.shape == "VM.Standard.E5.Flex"
     error_message = "The APPLY must use the explicitly requested shape without pretending to fall back."
+  }
+
+  assert {
+    condition = anytrue([
+      for statement in oci_identity_policy.vm_aidp_runtime.statements :
+      strcontains(statement, "manage datalake in compartment id ocid1.compartment.oc1..test")
+    ])
+    error_message = "The VM must manage AIDP tutorial material only in the lab compartment."
   }
 }
 

@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -113,7 +114,7 @@ class IdentityClient:
             raise IdentityConflict("Identity Domains returned multiple users for this email")
         return matches[0] if matches else None
 
-    async def create_user(self, name: str, email: str, password: str) -> dict[str, Any]:
+    async def create_user(self, name: str, email: str) -> dict[str, Any]:
         name_parts = name.rsplit(" ", 1)
         given_name = name_parts[0]
         family_name = name_parts[-1]
@@ -126,7 +127,6 @@ class IdentityClient:
                 "name": {"formatted": name, "givenName": given_name, "familyName": family_name},
                 "displayName": name,
                 "emails": [{"value": email, "type": "work", "primary": True}],
-                "password": password,
                 "active": True,
                 "externalId": self.settings.lab_marker,
             },
@@ -136,7 +136,20 @@ class IdentityClient:
         if response.status_code in {400, 422}:
             raise IdentityRejected(_safe_error(response))
         response.raise_for_status()
-        return response.json()
+        user = response.json()
+        activation = await self._request(
+            "PUT",
+            f"/admin/v1/UserActivationInitiator/{user['id']}",
+            headers={"Content-Type": "application/scim+json"},
+            json={
+                "schemas": [
+                    "urn:ietf:params:scim:schemas:oracle:idcs:UserActivationInitiator"
+                ]
+            },
+        )
+        if activation.status_code not in {200, 201, 204, 409}:
+            activation.raise_for_status()
+        return user
 
     async def _is_member(self, group_id: str, user_id: str) -> bool:
         response = await self._request(
@@ -178,12 +191,12 @@ class IdentityClient:
         )
         response.raise_for_status()
 
-    async def register(self, name: str, email: str, password: str) -> RegistrationResult:
+    async def register(self, name: str, email: str) -> RegistrationResult:
         user = await self.find_user(email)
         created = False
         if not user:
             try:
-                user = await self.create_user(name, email, password)
+                user = await self.create_user(name, email)
                 created = True
             except IdentityRace:
                 for _ in range(SCIM_CONSISTENCY_ATTEMPTS):
@@ -219,6 +232,19 @@ class IdentityClient:
             return False
         response.raise_for_status()
         return True
+
+    async def get_lab_user(self, user_id: str) -> dict[str, Any] | None:
+        response = await self._request("GET", f"/admin/v1/Users/{user_id}")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        user = response.json()
+        if user.get("externalId") != self.settings.lab_marker:
+            raise IdentityConflict("Only users created by this lab can be deleted")
+        return {
+            "id": str(user["id"]),
+            "email": str(user.get("userName", "")),
+        }
 
     async def healthcheck(self) -> None:
         response = await self._request(
@@ -277,6 +303,48 @@ class IdentityClient:
                 }
             )
         return sorted(users, key=lambda item: (item["status"], item["email"].lower()))
+
+
+class LocalIdentityClient:
+    """In-memory Identity Domains substitute for the local Docker profile only."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.users: dict[str, dict[str, Any]] = {}
+
+    async def close(self) -> None:
+        return None
+
+    async def healthcheck(self) -> None:
+        return None
+
+    async def register(self, name: str, email: str) -> RegistrationResult:
+        normalized_email = email.casefold()
+        for user in self.users.values():
+            if user["email"].casefold() == normalized_email:
+                return RegistrationResult("reconciled", user["id"], user["email"])
+        user_id = uuid4().hex
+        self.users[user_id] = {
+            "id": user_id,
+            "name": name,
+            "email": email,
+            "status": "active",
+            "active": True,
+            "managed": True,
+        }
+        return RegistrationResult("created", user_id, email)
+
+    async def list_lab_users(self) -> list[dict[str, Any]]:
+        return sorted(self.users.values(), key=lambda item: item["email"].casefold())
+
+    async def delete_lab_user(self, user_id: str) -> bool:
+        return self.users.pop(user_id, None) is not None
+
+    async def get_lab_user(self, user_id: str) -> dict[str, Any] | None:
+        user = self.users.get(user_id)
+        if not user:
+            return None
+        return {"id": user_id, "email": str(user["email"])}
 
 
 def _scim_literal(value: str) -> str:

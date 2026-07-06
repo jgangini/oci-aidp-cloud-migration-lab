@@ -55,7 +55,10 @@
   "outputs": [
     "application_url",
     "admin_url",
-    "aidp_console_url",
+    "aidp_workbench_url",
+    "aidp_web_socket_endpoint",
+    "tenancy_name",
+    "identity_domain_name",
     "compartment_ocid",
     "bucket_name",
     "objectstorage_namespace",
