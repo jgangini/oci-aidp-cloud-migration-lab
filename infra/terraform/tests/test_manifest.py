@@ -25,8 +25,9 @@ def test_deploy_studio_manifest_contract() -> None:
     assert fields["admin_password"]["transform"] == "pbkdf2_sha256"
     assert fields["registration_code"]["pattern"] == "^[A-Z]{4}-[0-9]{4}$"
     assert fields["registration_code"]["transform"] == "uppercase_pbkdf2_sha256"
-    assert manifest["presentation"]["title"] == "OCI AIDP Cloud Migration Lab"
-    assert manifest["presentation"]["tags"] == ["AIDP Workbench", "Medallion Storage", "Identity Domains", "Object Storage", "HTTPS VM"]
+    assert manifest["presentation"]["title"] == "OCI AI Data Platform Cloud Migration Lab"
+    assert manifest["presentation"]["tags"] == ["VM", "VCN", "AI Data Platform", "Object Storage Bucket", "IAM Policies"]
+    assert manifest["presentation"]["image"] == "/assets/oci-aidp-cloud-migration-lab.png"
     assert [field["name"] for field in manifest["preflight"]["runtime_fields"]] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
     assert manifest["preflight"]["output_inputs"] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
     assert (root / manifest["preflight"]["entrypoint"]).is_file()
