@@ -21,7 +21,7 @@ from oci._vendor import requests
 API_VERSION = "20260430"
 CATALOG_NAME = "aidp_lab"
 ROLE_NAME = "AIDP_LAB_DEVELOPER"
-SHARED_COMPUTE_NAME = "aidp-lab-shared-compute"
+SHARED_COMPUTE_NAME = "aidp_lab_shared_compute"
 LAYERS = ("landing", "bronze", "silver", "gold")
 RESOURCE_WAIT_ATTEMPTS = 120
 
@@ -292,6 +292,27 @@ def build_signer(config: dict[str, Any]) -> Any:
     )
 
 
+def ensure_object_prefixes(client: Any, namespace: str, bucket: str) -> list[str]:
+    import oci
+
+    events: list[str] = []
+    for index, layer in enumerate(LAYERS, start=1):
+        name = f"{index:02d}_{layer}/"
+        try:
+            client.head_object(namespace, bucket, name)
+            created = False
+        except oci.exceptions.ServiceError as exc:
+            if exc.status != 404:
+                raise ReconcileError(f"Object Storage prefix check failed with {exc.status}: {name}") from exc
+            try:
+                client.put_object(namespace, bucket, name, b"", content_type="application/x-directory")
+            except oci.exceptions.ServiceError as put_exc:
+                raise ReconcileError(f"Object Storage prefix creation failed with {put_exc.status}: {name}") from put_exc
+            created = True
+        events.append(f"Object Storage prefix {name} {'created' if created else 'reused'}")
+    return events
+
+
 def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     events: list[str] = []
     workspace_name = str(outputs["default_workspace_name"])
@@ -551,8 +572,15 @@ def main() -> int:
         outputs = context["terraform_outputs"]
         oci_config = load_oci_config(config_path, key_path)
         signer = build_signer(oci_config)
+        import oci
+
+        object_storage = oci.object_storage.ObjectStorageClient(oci_config, signer=signer)
+        messages = ensure_object_prefixes(
+            object_storage, str(outputs["objectstorage_namespace"]), str(outputs["bucket_name"])
+        )
         api = AidpApi(context["region"], outputs["ai_data_platform_id"], signer, context["deployment_id"])
-        reconciled, messages = reconcile(api, outputs)
+        reconciled, reconcile_messages = reconcile(api, outputs)
+        messages.extend(reconcile_messages)
         aidp_url = resolve_workbench_url(outputs, oci_config, signer)
         if not aidp_url:
             messages.append("Workbench endpoint is not published yet; configure the direct URL in Settings when available")

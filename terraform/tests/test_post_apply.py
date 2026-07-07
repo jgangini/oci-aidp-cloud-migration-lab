@@ -123,11 +123,33 @@ def test_reconcile_builds_canonical_medallion_resources(monkeypatch) -> None:
     assert role_queries and all(query == {"displayName": "AIDP_LAB_DEVELOPER"} for query in role_queries)
     assert any("Developer group" in event for event in events)
     cluster_payloads = [payload for method, path, payload, _ in api.calls if method == "POST" and path.endswith("/clusters")]
-    assert cluster_payloads[0]["displayName"] == "aidp-lab-shared-compute"
+    assert cluster_payloads[0]["displayName"] == "aidp_lab_shared_compute"
     assert cluster_payloads[0]["type"] == "USER"
     assert cluster_payloads[0]["driverConfig"]["driverShape"] == "amd.generic"
     assert cluster_payloads[0]["workerConfig"]["maxWorkerCount"] == 10
-    assert reconciled["shared_compute_key"] == "aidp-lab-shared-compute-key"
+    assert reconciled["shared_compute_key"] == "aidp_lab_shared_compute-key"
+
+
+def test_object_prefixes_are_created_only_when_missing() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.objects = {"02_bronze/"}
+
+        def head_object(self, namespace, bucket, name):
+            if name not in self.objects:
+                import oci
+
+                raise oci.exceptions.ServiceError(404, "NotFound", {}, "missing")
+
+        def put_object(self, namespace, bucket, name, body, *, content_type):
+            assert body == b""
+            assert content_type == "application/x-directory"
+            self.objects.add(name)
+
+    client = Client()
+    events = post_apply.ensure_object_prefixes(client, "namespace", "bucket")
+    assert client.objects == {"01_landing/", "02_bronze/", "03_silver/", "04_gold/"}
+    assert "Object Storage prefix 02_bronze/ reused" in events
 
 
 def test_existing_incompatible_catalog_is_never_replaced() -> None:
