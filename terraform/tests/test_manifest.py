@@ -112,10 +112,7 @@ def test_runtime_security_contracts() -> None:
     assert 'create_duration = "420s"' in identity
     assert "depends_on          = [time_sleep.kms_endpoint]" in identity
     assert "vault_id = oci_kms_vault.lab.id" in identity
-    assert 'resource "time_sleep" "objectstorage_bucket"' in storage
-    assert 'create_duration = "60s"' in storage
-    assert "depends_on = [time_sleep.objectstorage_bucket]" in storage
-    assert "bucket_id = oci_objectstorage_bucket.data.id" in storage
+    assert 'resource "oci_objectstorage_object"' not in storage
     assert 'web_socket_endpoint == null ? "" : oci_ai_data_platform_ai_data_platform.lab.web_socket_endpoint' in aidp
     network = (root / "terraform/e_oci_core_vcn.tf").read_text(encoding="utf-8")
     assert 'resource "oci_core_security_list" "web"' in network

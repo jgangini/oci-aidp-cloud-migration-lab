@@ -94,8 +94,8 @@ run "resolved_compartment_contract" {
   }
 
   assert {
-    condition     = length(oci_objectstorage_object.prefixes) == 4
-    error_message = "Exactly four medallion marker objects must be planned."
+    condition     = local.medallion_prefixes == ["01_landing/", "02_bronze/", "03_silver/", "04_gold/"]
+    error_message = "The four logical medallion prefixes must remain stable."
   }
 
   assert {
