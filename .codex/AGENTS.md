@@ -28,6 +28,8 @@ Keep this file repo-specific. Do not duplicate universal rules that already live
 - Sensitive paths or fragile areas: `terraform/h_oci_identity.tf`, `terraform/hooks/post_apply.py`, SCIM filters, cloud-init, Vault secret wiring.
 - Credentials, external systems, or approval boundaries: OCI config/key and plaintext lab secrets never enter Git, Terraform variables, artifacts, or VM metadata.
 - Noisy, slow, or expensive commands to avoid by default: live OCI APPLY and Identity Domains mutations; use provider mocks and HTTP fakes first.
+- Before a live AIDP APPLY, require the Default Identity Domain's **Access Signing Certificate** setting; do not bypass the repository preflight because a closed public JWK leaves AIDP retrying OSCS configuration.
+- A manual AIDP platform must have its own stable 9-statement required policy. Never rely on a policy owned by another Terraform stack; VNIC, subnet, NSG, and Object Storage service deletion permissions remain optional.
 
 ## Continuous Improvement Triggers
 

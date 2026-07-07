@@ -10,6 +10,7 @@ The laboratory creates one governed `aidp-data-*` Object Storage bucket with `01
 - The administrator password and registration code reach Terraform only as PBKDF2 hashes. Lab users activate their own Identity Domains password from the standard OCI welcome email.
 - The Identity Domains OAuth client secret is written to OCI Vault. It remains sensitive in Resource Manager state because the provider returns it when the app is created; restrict access to the stack and its state.
 - Developer IAM can list bucket metadata in the lab compartment but can manage objects only in `aidp-data-<suffix>`; AIDP service object access follows Oracle's governing AIDP tag conditions.
+- The Default Identity Domain must enable **Access Signing Certificate** so AIDP's API Gateway can read the domain's public JWK. Deploy Studio preflight fails before provisioning when this prerequisite is disabled.
 - OCI Provider 8.21 does not expose `force_destroy`; its native delete refuses a non-empty data bucket, preventing automatic lab-data deletion.
 - The HTTPS certificate is self-signed and includes the public IP/FQDN as SANs, so browsers will show a trust warning.
 - Tenancy-level IAM and Identity Domains resources use an OCI provider alias pinned to the tenancy home region; regional AIDP, Compute, Networking, Object Storage, KMS, and Vault resources continue to use the deployment region.

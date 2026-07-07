@@ -38,11 +38,36 @@ def _candidate_shapes(preferred: str) -> list[str]:
     return list(SUPPORTED_SHAPES[SUPPORTED_SHAPES.index(preferred) :])
 
 
+def _require_public_signing_certificate(
+    sdk_config: dict[str, Any],
+    tenancy_id: str,
+    home_region: str,
+    identity_factory: Callable[[dict[str, Any]], Any],
+    identity_domains_factory: Callable[..., Any],
+) -> None:
+    home_config = dict(sdk_config)
+    home_config["region"] = home_region
+    domains = identity_factory(home_config).list_domains(
+        compartment_id=tenancy_id,
+        type="DEFAULT",
+        lifecycle_state="ACTIVE",
+    ).data
+    if len(domains) != 1 or not getattr(domains[0], "url", None):
+        raise RuntimeError("OCI did not return one active Default Identity Domain")
+    settings = identity_domains_factory(home_config, service_endpoint=str(domains[0].url)).list_settings(
+        limit=2,
+        attributes="id,signingCertPublicAccess",
+    ).data.resources
+    if len(settings or []) != 1 or settings[0].signing_cert_public_access is not True:
+        raise RuntimeError("Default Identity Domain must enable Access Signing Certificate for AIDP")
+
+
 def select_inputs(
     context: dict[str, Any],
     sdk_config: dict[str, Any],
     identity_factory: Callable[[dict[str, Any]], Any] = oci.identity.IdentityClient,
     compute_factory: Callable[[dict[str, Any]], Any] = oci.core.ComputeClient,
+    identity_domains_factory: Callable[..., Any] = oci.identity_domains.IdentityDomainsClient,
 ) -> dict[str, Any]:
     inputs = context.get("inputs") or {}
     region = str(context.get("region") or sdk_config.get("region") or "").strip()
@@ -57,6 +82,13 @@ def select_inputs(
     regional_config["region"] = region
     identity = identity_factory(regional_config)
     home_region = _home_region(identity, tenancy_id)
+    _require_public_signing_certificate(
+        sdk_config,
+        tenancy_id,
+        home_region,
+        identity_factory,
+        identity_domains_factory,
+    )
     availability_domains = identity.list_availability_domains(tenancy_id).data
     compute = compute_factory(regional_config)
     for availability_domain_index, domain in enumerate(availability_domains):
@@ -99,6 +131,11 @@ def select_inputs(
                 },
                 "events": [
                     {"name": "OCI tenancy home region", "status": "passed", "message": home_region},
+                    {
+                        "name": "Identity Domain signing certificate access",
+                        "status": "passed",
+                        "message": "Default domain publishes its public JWK",
+                    },
                     {
                         "name": "Compute capacity preflight",
                         "status": "passed",

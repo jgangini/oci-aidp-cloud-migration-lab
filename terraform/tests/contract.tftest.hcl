@@ -134,6 +134,16 @@ run "resolved_compartment_contract" {
   }
 
   assert {
+    condition = alltrue([
+      for statement in oci_identity_policy.aidp_service.statements :
+      !strcontains(statement, "manage vnics") &&
+      !strcontains(statement, "use subnets") &&
+      !strcontains(statement, "use network-security-groups")
+    ])
+    error_message = "Optional private-network permissions must not be part of the required AIDP policy."
+  }
+
+  assert {
     condition = anytrue([
       for statement in oci_identity_policy.vm_run_command.statements :
       strcontains(statement, "Allow any-user to use instance-agent-command-execution-family") &&

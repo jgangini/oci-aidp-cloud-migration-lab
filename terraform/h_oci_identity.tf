@@ -1,7 +1,7 @@
 data "oci_identity_domains" "default" {
   provider       = oci.home
   compartment_id = var.tenancy_ocid
-  display_name   = "Default"
+  type           = "DEFAULT"
   state          = "ACTIVE"
 }
 
