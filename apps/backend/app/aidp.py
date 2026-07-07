@@ -20,7 +20,7 @@ from .config import Settings
 
 
 API_VERSION = "20260430"
-SHARED_COMPUTE_NAME = "aidp-lab-shared-compute"
+SHARED_COMPUTE_NAME = "aidp_lab_shared_compute"
 INDUSTRIES = ("banking", "telecommunications", "retail", "healthcare")
 
 

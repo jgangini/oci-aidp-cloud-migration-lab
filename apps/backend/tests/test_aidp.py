@@ -36,6 +36,12 @@ def test_email_folder_is_deterministic_and_readable() -> None:
     assert normalized_user_key("Ada.Lovelace+Lab@example.com") == "ada-lovelace-lab-example-com"
 
 
+def test_live_client_finds_the_reconciled_shared_compute() -> None:
+    client = object.__new__(AidpClient)
+    client._list = lambda _path: [{"displayName": "aidp_lab_shared_compute", "key": "cluster-key"}]
+    assert client._shared_compute("workspace-key")["key"] == "cluster-key"
+
+
 def test_live_client_scopes_notebook_and_job_requests_to_the_workspace() -> None:
     client = object.__new__(AidpClient)
     calls: list[tuple[str, str, dict | None]] = []
