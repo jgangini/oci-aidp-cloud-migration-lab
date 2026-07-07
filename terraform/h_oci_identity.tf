@@ -92,8 +92,12 @@ resource "oci_kms_vault" "lab" {
 }
 
 resource "time_sleep" "kms_endpoint" {
-  create_duration = "120s"
+  # ponytail: live Resource Manager DNS was still unavailable after 339s; use 7m until OCI exposes endpoint readiness.
+  create_duration = "420s"
   depends_on      = [oci_kms_vault.lab]
+  triggers = {
+    vault_id = oci_kms_vault.lab.id
+  }
 }
 
 resource "oci_kms_key" "lab" {

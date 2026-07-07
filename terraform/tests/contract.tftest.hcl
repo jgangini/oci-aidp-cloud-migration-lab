@@ -10,6 +10,12 @@ override_resource {
   values = { result = "test1234" }
 }
 
+override_resource {
+  target          = oci_ai_data_platform_ai_data_platform.lab
+  override_during = plan
+  values          = { web_socket_endpoint = null }
+}
+
 override_data {
   target = data.oci_identity_domains.default
   values = {
@@ -80,6 +86,11 @@ run "resolved_compartment_contract" {
   assert {
     condition     = oci_ai_data_platform_ai_data_platform.lab.default_workspace_name == "aidp-lab-workspace-test1234"
     error_message = "The AIDP default workspace must be deterministic."
+  }
+
+  assert {
+    condition     = local.aidp_web_socket_endpoint == ""
+    error_message = "A null AIDP WebSocket endpoint must not fail the apply."
   }
 
   assert {

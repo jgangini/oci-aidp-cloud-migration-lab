@@ -14,10 +14,19 @@ resource "oci_objectstorage_bucket" "data" {
   }
 }
 
+resource "time_sleep" "objectstorage_bucket" {
+  create_duration = "60s"
+  depends_on      = [oci_objectstorage_bucket.data]
+  triggers = {
+    bucket_id = oci_objectstorage_bucket.data.id
+  }
+}
+
 resource "oci_objectstorage_object" "prefixes" {
-  for_each  = toset(local.medallion_prefixes)
-  namespace = var.objectstorage_namespace
-  bucket    = oci_objectstorage_bucket.data.name
-  object    = "${each.value}.keep"
-  content   = "Managed by OCI AIDP Cloud Migration Lab.\n"
+  for_each   = toset(local.medallion_prefixes)
+  namespace  = var.objectstorage_namespace
+  bucket     = oci_objectstorage_bucket.data.name
+  object     = "${each.value}.keep"
+  content    = "Managed by OCI AIDP Cloud Migration Lab.\n"
+  depends_on = [time_sleep.objectstorage_bucket]
 }
