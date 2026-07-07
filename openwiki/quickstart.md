@@ -30,15 +30,15 @@ The top-level README is the user-facing source of truth for safety constraints, 
 - Frontend styles: [`apps/frontend/src/styles.css`](../apps/frontend/src/styles.css)
 
 ### Infrastructure and packaging
-- Terraform root: [`infra/terraform/`](../infra/terraform/)
-- Deploy Studio package metadata: [`deploy-studio.json`](../deploy-studio.json)
-- Container orchestration: [`docker-compose.yml`](../docker-compose.yml), [`docker-compose.dev.yml`](../docker-compose.dev.yml), [`docker-compose.oci-local.yml`](../docker-compose.oci-local.yml)
+- Terraform root: [`terraform/`](../terraform/)
+- Deploy Studio package metadata: [`terraform/deploy-studio.json`](../terraform/deploy-studio.json)
+- Container orchestration: [`docker/docker-compose.yml`](../docker/docker-compose.yml), [`docker/docker-compose.dev.yml`](../docker/docker-compose.dev.yml), [`docker/docker-compose.oci-local.yml`](../docker/docker-compose.oci-local.yml)
 - Environment bootstrap: [`scripts/bootstrap_local_oci_env.py`](../scripts/bootstrap_local_oci_env.py)
 
 ### Tests
 - Backend API tests: [`apps/backend/tests/test_api.py`](../apps/backend/tests/test_api.py)
 - Frontend security tests: [`apps/frontend/tests/security.test.mjs`](../apps/frontend/tests/security.test.mjs)
-- Terraform tests: [`infra/terraform/tests/`](../infra/terraform/tests/)
+- Terraform tests: [`terraform/tests/`](../terraform/tests/)
 
 ## Key concepts
 - The lab uses a single private Object Storage bucket with medallion prefixes `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/`.

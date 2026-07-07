@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project_id": "oci-aidp-cloud-migration-lab",
   "terraform": {
-    "path": "infra/terraform",
+    "path": "terraform",
     "package_oci_credentials": false
   },
   "capabilities": {
@@ -74,7 +74,7 @@
   ],
   "artifacts": ["aidp_lab_summary.json"],
   "preflight": {
-    "entrypoint": "infra/terraform/preflight.py",
+    "entrypoint": "terraform/k_preflight.py",
     "timeout_seconds": 60,
     "requires_oci_credentials": true,
     "output_inputs": ["home_region", "preferred_vm_shape", "availability_domain_index"],
@@ -110,7 +110,7 @@
     ]
   },
   "post_apply": {
-    "entrypoint": "infra/terraform/hooks/post_apply.py",
+    "entrypoint": "terraform/hooks/post_apply.py",
     "timeout_seconds": 3600,
     "requires_oci_credentials": true
   }

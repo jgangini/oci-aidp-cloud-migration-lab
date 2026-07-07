@@ -6,14 +6,14 @@ from pathlib import Path
 
 
 def test_deploy_studio_manifest_contract() -> None:
-    root = Path(__file__).parents[3]
-    manifest = json.loads((root / "deploy-studio.json").read_text(encoding="utf-8"))
+    root = Path(__file__).parents[2]
+    manifest = json.loads((root / "terraform" / "deploy-studio.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == 1
     assert manifest["project_id"] == "oci-aidp-cloud-migration-lab"
-    assert manifest["terraform"] == {"path": "infra/terraform", "package_oci_credentials": False}
+    assert manifest["terraform"] == {"path": "terraform", "package_oci_credentials": False}
     assert manifest["capabilities"]["database_profile"] == "none"
     assert manifest["post_apply"]["requires_oci_credentials"] is True
-    assert manifest["post_apply"]["entrypoint"] == "infra/terraform/hooks/post_apply.py"
+    assert manifest["post_apply"]["entrypoint"] == "terraform/hooks/post_apply.py"
     assert manifest["post_apply"]["timeout_seconds"] == 3600
     assert (root / manifest["post_apply"]["entrypoint"]).is_file()
     fields = {field["name"]: field for field in manifest["form"]["fields"]}
@@ -36,8 +36,8 @@ def test_deploy_studio_manifest_contract() -> None:
 
 
 def test_hook_result_matches_runner_and_manifest_contract() -> None:
-    root = Path(__file__).parents[3]
-    manifest = json.loads((root / "deploy-studio.json").read_text(encoding="utf-8"))
+    root = Path(__file__).parents[2]
+    manifest = json.loads((root / "terraform" / "deploy-studio.json").read_text(encoding="utf-8"))
     module_path = root / manifest["post_apply"]["entrypoint"]
     spec = importlib.util.spec_from_file_location("post_apply_manifest_contract", module_path)
     module = importlib.util.module_from_spec(spec)
@@ -58,17 +58,17 @@ def test_hook_result_matches_runner_and_manifest_contract() -> None:
 
 
 def test_runtime_security_contracts() -> None:
-    root = Path(__file__).parents[3]
+    root = Path(__file__).parents[2]
     attributes = (root / ".gitattributes").read_text(encoding="utf-8")
     nginx = (root / "docker/nginx.conf").read_text(encoding="utf-8")
     entrypoint = (root / "docker/entrypoint.sh").read_text(encoding="utf-8")
-    cloud_init = (root / "infra/terraform/templatefile/user_data.sh").read_text(encoding="utf-8")
-    variables = (root / "infra/terraform/variables.tf").read_text(encoding="utf-8")
-    providers = (root / "infra/terraform/a_main.tf").read_text(encoding="utf-8")
-    compute = (root / "infra/terraform/c_oci_core_instance.tf").read_text(encoding="utf-8")
-    identity = (root / "infra/terraform/d_oci_identity.tf").read_text(encoding="utf-8")
-    aidp = (root / "infra/terraform/e_oci_ai_data_platform.tf").read_text(encoding="utf-8")
-    storage = (root / "infra/terraform/b_oci_objectstorage_bucket.tf").read_text(encoding="utf-8")
+    cloud_init = (root / "terraform/templatefile/user_data.sh").read_text(encoding="utf-8")
+    variables = (root / "terraform/b_variables.tf").read_text(encoding="utf-8")
+    providers = (root / "terraform/d_main.tf").read_text(encoding="utf-8")
+    compute = (root / "terraform/g_oci_core_instance.tf").read_text(encoding="utf-8")
+    identity = (root / "terraform/h_oci_identity.tf").read_text(encoding="utf-8")
+    aidp = (root / "terraform/i_oci_ai_data_platform.tf").read_text(encoding="utf-8")
+    storage = (root / "terraform/f_oci_objectstorage_bucket.tf").read_text(encoding="utf-8")
     assert "$proxy_add_x_forwarded_for" not in nginx
     assert "*.sh text eol=lf" in attributes
     assert nginx.count("X-Forwarded-For $remote_addr") == 2
@@ -111,7 +111,7 @@ def test_runtime_security_contracts() -> None:
     assert 'resource "time_sleep" "kms_endpoint"' in identity
     assert 'create_duration = "120s"' in identity
     assert "depends_on          = [time_sleep.kms_endpoint]" in identity
-    network = (root / "infra/terraform/b_oci_core_vcn.tf").read_text(encoding="utf-8")
+    network = (root / "terraform/e_oci_core_vcn.tf").read_text(encoding="utf-8")
     assert 'resource "oci_core_security_list" "web"' in network
     assert "security_list_ids          = [oci_core_security_list.web.id]" in network
     assert 'dns_label      = "aidplab"' in network
@@ -129,20 +129,21 @@ def test_runtime_security_contracts() -> None:
 
 
 def test_terraform_files_follow_select_ai_order() -> None:
-    root = Path(__file__).parents[3] / "infra/terraform"
+    root = Path(__file__).parents[2] / "terraform"
     expected = {
-        "a_main.tf",
-        "b_oci_core_vcn.tf",
-        "b_oci_objectstorage_bucket.tf",
-        "c_oci_core_instance.tf",
-        "d_oci_identity.tf",
-        "e_oci_ai_data_platform.tf",
-        "f_outputs.tf",
-        "naming.tf",
-        "variables.tf",
-        "versions.tf",
+        "a_versions.tf",
+        "b_variables.tf",
+        "c_naming.tf",
+        "d_main.tf",
+        "e_oci_core_vcn.tf",
+        "f_oci_objectstorage_bucket.tf",
+        "g_oci_core_instance.tf",
+        "h_oci_identity.tf",
+        "i_oci_ai_data_platform.tf",
+        "j_outputs.tf",
     }
     assert expected.issubset({path.name for path in root.glob("*.tf")})
+    assert [path.name[0] for path in sorted(root.glob("*.tf"))] == list("abcdefghij")
     assert not {"main.tf", "network.tf", "compute.tf", "storage.tf", "identity.tf", "aidp.tf", "outputs.tf", "providers.tf"} & {
         path.name for path in root.glob("*.tf")
     }

@@ -2,16 +2,18 @@ name: aidp-lab-oci-local
 
 services:
   aidp-lab:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     env_file:
-      - .env
+      - ../.env
     ports:
       - "127.0.0.1:18082:80"
     environment:
       COOKIE_SECURE: "false"
     volumes:
       - aidp-session-oci-local:/var/lib/aidp-lab
-      - ./docker/nginx.oci-local.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.oci-local.conf:/etc/nginx/nginx.conf:ro
     restart: "no"
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1/api/health || exit 1"]

@@ -16,7 +16,7 @@ jobs:
         terraform_version: ["1.5.7", "1.15.7"]
     defaults:
       run:
-        working-directory: infra/terraform
+        working-directory: terraform
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -38,7 +38,7 @@ jobs:
           cache: pip
           cache-dependency-path: apps/backend/requirements-dev.txt
       - run: pip install -r apps/backend/requirements-dev.txt
-      - run: pytest apps/backend/tests infra/terraform/tests
+      - run: pytest apps/backend/tests terraform/tests
         env:
           SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
 
@@ -62,4 +62,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t aidp-lab:test .
+      - run: docker build -f docker/Dockerfile -t aidp-lab:test .

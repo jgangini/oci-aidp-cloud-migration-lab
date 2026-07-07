@@ -6,20 +6,20 @@ This repository has three operational modes that matter for development and vali
 The top-level README describes the Deploy Studio package that provisions OCI resources, creates the VM, and wires Identity Domains and AIDP together. This is the production-like path and the one that matters most for lab operators.
 
 ## 2. Local-only development profile
-[`docker-compose.dev.yml`](../docker-compose.dev.yml) runs the same image with a local `.env.dev` file and localhost-only ports. It uses in-memory users instead of OCI Identity Domains, so it is good for UI and backend iteration but cannot prove cloud permissions.
+[`docker/docker-compose.dev.yml`](../docker/docker-compose.dev.yml) runs the same image with a local `.env.dev` file and localhost-only ports. It uses in-memory users instead of OCI Identity Domains, so it is good for UI and backend iteration but cannot prove cloud permissions.
 
 Typical flow from the README:
 ```powershell
 Copy-Item .env.example .env.dev
-docker compose -f docker-compose.dev.yml up --build -d
+docker compose -f docker/docker-compose.dev.yml up --build -d
 ```
 Stop it with:
 ```powershell
-docker compose -f docker-compose.dev.yml down
+docker compose -f docker/docker-compose.dev.yml down
 ```
 
 ## 3. OCI-connected local profile
-[`docker-compose.oci-local.yml`](../docker-compose.oci-local.yml) runs the same image against live OCI resources on localhost-only ports. It is intentionally not a replacement for the VM.
+[`docker/docker-compose.oci-local.yml`](../docker/docker-compose.oci-local.yml) runs the same image against live OCI resources on localhost-only ports. It is intentionally not a replacement for the VM.
 
 The bootstrap helper [`scripts/bootstrap_local_oci_env.py`](../scripts/bootstrap_local_oci_env.py) discovers the live lab resources and writes a local `.env` without printing secrets. It can also self-check its env rendering and secret escaping behavior.
 

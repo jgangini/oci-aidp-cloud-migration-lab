@@ -30,7 +30,7 @@ The frontend in [`apps/frontend/src/App.tsx`](../apps/frontend/src/App.tsx) rend
 - modal confirmations and basic accessibility behavior such as focus trapping
 
 ### OCI infrastructure
-The Terraform package under [`infra/terraform/`](../infra/terraform/) is what turns the app into a deployable OCI lab:
+The Terraform package under [`terraform/`](../terraform/) is what turns the app into a deployable OCI lab:
 - tenancy-scoped Identity Domains resources and secrets
 - regional networking, Compute, Object Storage, KMS, Vault, and AIDP resources
 - a single data bucket with the medallion prefixes called out in the README
@@ -40,8 +40,8 @@ The Terraform package under [`infra/terraform/`](../infra/terraform/) is what tu
 ### Run modes
 The repository supports three practical modes:
 1. OCI deployment through Deploy Studio and Terraform
-2. local-only development with `docker-compose.dev.yml`
-3. OCI-connected local testing with `docker-compose.oci-local.yml` and `scripts/bootstrap_local_oci_env.py`
+2. local-only development with `docker/docker-compose.dev.yml`
+3. OCI-connected local testing with `docker/docker-compose.oci-local.yml` and `scripts/bootstrap_local_oci_env.py`
 
 ## Design boundaries
 - Secrets stay out of source control. The repo uses hashes, Vault, env files, and instance principals rather than plaintext secrets.
@@ -53,4 +53,4 @@ The repository supports three practical modes:
 - Registration/login/auth changes: backend main app, security helpers, and API tests
 - Identity-domain logic: `apps/backend/app/identity.py` and `scripts/bootstrap_local_oci_env.py`
 - User experience: frontend `App.tsx`, styles, and browser security tests
-- OCI topology or permissions: Terraform and `infra/terraform/hooks/post_apply.py`
+- OCI topology or permissions: Terraform and `terraform/hooks/post_apply.py`

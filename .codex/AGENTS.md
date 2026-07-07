@@ -13,7 +13,7 @@ Keep this file repo-specific. Do not duplicate universal rules that already live
 
 ## Repo Operating Defaults
 
-- Preferred validation commands: `terraform fmt -check -recursive`, `terraform validate`, `terraform test`, `pytest apps/backend/tests infra/terraform/tests`, `npm test`, `npm run build`, and `docker build`.
+- Preferred validation commands: `terraform fmt -check -recursive`, `terraform validate`, `terraform test`, `pytest apps/backend/tests terraform/tests`, `npm test`, `npm run build`, and `docker build -f docker/Dockerfile`.
 - Preferred search and inspection tools: Semble first, then direct file inspection; use the official AIDP Swagger as the REST contract.
 - Default runtime or environment assumptions: OCI Provider 8.x, Terraform 1.7+, Python 3.12, Node 22, Oracle Linux 9, Default Identity Domain.
 
@@ -25,7 +25,7 @@ Keep this file repo-specific. Do not duplicate universal rules that already live
 
 ## Repo-Specific Friction
 
-- Sensitive paths or fragile areas: `infra/terraform/identity.tf`, `hooks/post_apply.py`, SCIM filters, cloud-init, Vault secret wiring.
+- Sensitive paths or fragile areas: `terraform/h_oci_identity.tf`, `terraform/hooks/post_apply.py`, SCIM filters, cloud-init, Vault secret wiring.
 - Credentials, external systems, or approval boundaries: OCI config/key and plaintext lab secrets never enter Git, Terraform variables, artifacts, or VM metadata.
 - Noisy, slow, or expensive commands to avoid by default: live OCI APPLY and Identity Domains mutations; use provider mocks and HTTP fakes first.
 

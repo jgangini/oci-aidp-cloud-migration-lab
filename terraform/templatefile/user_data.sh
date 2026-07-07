@@ -37,7 +37,7 @@ use_reachable_base_images() {
   sed -i \
     -e 's#^FROM node:#FROM public.ecr.aws/docker/library/node:#' \
     -e 's#^FROM python:#FROM public.ecr.aws/docker/library/python:#' \
-    "$SOURCE_DIR/Dockerfile"
+    "$SOURCE_DIR/docker/Dockerfile"
 }
 
 dnf -y makecache
@@ -121,7 +121,7 @@ COOKIE_SECURE=true
 EOF
 chmod 0600 /opt/aidp-lab/app.env
 
-retry 5 docker build -t "$LOCAL_IMAGE" "$SOURCE_DIR"
+retry 5 docker build -f "$SOURCE_DIR/docker/Dockerfile" -t "$LOCAL_IMAGE" "$SOURCE_DIR"
 docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$APP_NAME" \

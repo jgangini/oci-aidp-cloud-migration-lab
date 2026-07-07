@@ -17,7 +17,7 @@ The laboratory creates one governed `aidp-data-*` Object Storage bucket with `01
 ## Local application
 
 ```powershell
-docker build -t aidp-lab .
+docker build -f docker/Dockerfile -t aidp-lab .
 docker run --rm -p 8080:80 -p 8443:443 --env-file .env aidp-lab
 ```
 
@@ -30,10 +30,10 @@ The development profile runs the same nginx, FastAPI and React image as the VM, 
 
 ```powershell
 Copy-Item .env.example .env.dev
-docker compose -f docker-compose.dev.yml up --build -d
+docker compose -f docker/docker-compose.dev.yml up --build -d
 ```
 
-Open `https://localhost:18444` and accept the local self-signed certificate. The sample profile uses `admin` / `admin` and registration code `AIDP-2026`; change the hashes in `.env.dev` before sharing the environment. Stop it with `docker compose -f docker-compose.dev.yml down`.
+Open `https://localhost:18444` and accept the local self-signed certificate. The sample profile uses `admin` / `admin` and registration code `AIDP-2026`; change the hashes in `.env.dev` before sharing the environment. Stop it with `docker compose -f docker/docker-compose.dev.yml down`.
 
 ### OCI-connected local profile
 
@@ -41,7 +41,7 @@ To exercise the same image against the already deployed Identity Domains and AID
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\bootstrap_local_oci_env.py --config <oci-config> --key <oci-key.pem>
-docker compose -f docker-compose.oci-local.yml up --build --detach
+docker compose -f docker/docker-compose.oci-local.yml up --build --detach
 ```
 
 Open `http://127.0.0.1:18082`. This profile has no restart policy and binds only to `127.0.0.1`; it is for development testing, not a replacement for the OCI VM. It deliberately uses HTTP so the Codex browser can test the application without accepting the VM-style self-signed certificate.
@@ -49,7 +49,7 @@ Open `http://127.0.0.1:18082`. This profile has no restart policy and binds only
 ## Terraform
 
 ```powershell
-cd infra/terraform
+cd terraform
 terraform init -backend=false
 terraform validate
 ```

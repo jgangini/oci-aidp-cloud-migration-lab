@@ -22,7 +22,7 @@ This repository leans on tests to protect the lab’s security and workflow boun
 - keeping admin routes and destructive actions behind protected UI flows
 
 ## Terraform tests
-The Terraform tests under [`infra/terraform/tests/`](../infra/terraform/tests/) cover infrastructure shape and post-apply behavior. The recent git history shows many fixes in this area, so these tests are especially important when changing:
+The Terraform tests under [`terraform/tests/`](../terraform/tests/) cover infrastructure shape and post-apply behavior. The recent git history shows many fixes in this area, so these tests are especially important when changing:
 - VM bootstrapping or networking
 - OCI capacity selection and public IP handling
 - Identity Domains reconciliation

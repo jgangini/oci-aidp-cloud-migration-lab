@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 
-MODULE_PATH = Path(__file__).parents[1] / "preflight.py"
+MODULE_PATH = Path(__file__).parents[1] / "k_preflight.py"
 SPEC = importlib.util.spec_from_file_location("aidp_deploy_preflight", MODULE_PATH)
 assert SPEC and SPEC.loader
 preflight = importlib.util.module_from_spec(SPEC)

@@ -34,7 +34,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - run: pip install -r apps/backend/requirements-dev.txt
-      - run: pytest apps/backend/tests infra/terraform/tests
+      - run: pytest apps/backend/tests terraform/tests
         env:
           SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
       - run: npm ci
@@ -42,9 +42,9 @@ jobs:
       - run: npm test && npm run build
         working-directory: apps/frontend
       - run: terraform fmt -check -recursive
-        working-directory: infra/terraform
+        working-directory: terraform
       - run: terraform init -backend=false && terraform validate && terraform test
-        working-directory: infra/terraform
+        working-directory: terraform
       - name: Create or reuse GitHub release
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
