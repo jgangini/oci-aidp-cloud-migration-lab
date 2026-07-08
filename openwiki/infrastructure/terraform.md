@@ -34,7 +34,7 @@ The README says Deploy Studio preflight discovers the tenancy home region and op
 - can add missing resources
 - must not delete or replace mismatched live resources
 - authorizes catalog reconciliation and waits for asynchronous resources
-- verifies the operator's direct built-in `AI_DATA_PLATFORM_ADMIN` membership and aligns the workspace, catalog, shared compute, `/Workspace/lab-users` root, and pending/developer RBAC
+- verifies the operator's direct built-in `AI_DATA_PLATFORM_ADMIN` membership and aligns the workspace, catalog, shared compute, `/Workspace/medallon` root, four collaborative schemas, and pending/developer RBAC
 
 Participant provisioning uses external tables over OCI URIs in the one lab bucket. It does not create external AIDP volumes or an explicit OSCS/OpenSearch resource. Developer IAM may `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket; the operator keeps the administrative identity used to create AIDP, and AIDP-internal permissions remain the primary authorization layer.
 

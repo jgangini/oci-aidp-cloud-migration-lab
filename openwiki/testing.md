@@ -8,11 +8,11 @@ Release v1.0.0 leans on tests to protect the lab’s security and workflow bound
 - strict health-check behavior
 - SCIM filter safety in email validation
 - active/pending/conflict registration results
-- phase progression, immutable industry conflicts, and pending-to-developer promotion
-- opaque participant keys, four per-participant schemas, RBAC alignment, and idempotent retries
+- phase progression, public immutable-industry conflicts, administrator industry reset, and pending-to-developer promotion
+- email-named participant folders, four shared schemas, opaque-key table isolation, RBAC alignment, and idempotent retries
 - deterministic industry row counts and medallion notebook contracts
 - admin session handling and protected routes
-- admin create/delete lifecycle
+- admin create/reset/delete lifecycle, exact AIDP cleanup, retry operation IDs, and Industry inventory without exposing user OCIDs
 - local-development mode without OCI
 - identity client singleton behavior and shutdown
 
@@ -23,6 +23,7 @@ Release v1.0.0 leans on tests to protect the lab’s security and workflow bound
 - preserving the segmented registration code control
 - preserving phased backoff/deadline/abort behavior and exposing the AIDP link only for active users
 - keeping admin routes and destructive actions behind protected UI flows
+- preserving reset confirmation, industry selection, progress, and completion feedback
 
 ## Terraform tests
 The Terraform tests under [`terraform/tests/`](../terraform/tests/) cover infrastructure shape and post-apply behavior. The recent git history shows many fixes in this area, so these tests are especially important when changing:
@@ -36,7 +37,7 @@ The Terraform tests under [`terraform/tests/`](../terraform/tests/) cover infras
 ## OCI-local and live acceptance
 Run `python scripts/bootstrap_local_oci_env.py --self-check`, then validate `docker/docker-compose.oci-local.yml` with the generated `.env`. The profile must mount the sanitized config and original operator key read-only, bind only to localhost, and report healthy only when a signed Identity Domains query plus the operator-profile AIDP workspace/catalog/compute and exact-bucket checks pass.
 
-The release acceptance uses one real Banking participant. Before registration, require the operator to be a direct member of built-in `AI_DATA_PLATFORM_ADMIN`, confirm there is no `AIDP_LAB_PROVISIONER`, and prove `.bootstrap/operator-credentials.json` is absent after bootstrap. Then require opaque folder/schema names; 20/200/320/4,000 Landing rows; four notebooks; four schemas; 15 catalog tables; `quality_issues > 0`; Bronze totals equal to Landing; Silver totals no greater than Bronze; a successful chained job; and Gold `banking_customer_value` plus `banking_branch_daily`. Run it twice and require identical counts. Promotion from pending to developers happens only after permissions complete. Use structured state and logs, not screenshots, and leave the participant active for follow-up.
+The release acceptance uses one real Banking participant. Before registration, require the operator to be a direct member of built-in `AI_DATA_PLATFORM_ADMIN`, confirm there is no `AIDP_LAB_PROVISIONER`, and prove `.bootstrap/operator-credentials.json` is absent after bootstrap. Then require the email-named folder; 20/200/320/4,000 Landing rows; four notebooks; four shared schemas; 15 opaque-key-prefixed catalog tables; `quality_issues > 0`; Bronze totals equal to Landing; Silver totals no greater than Bronze; a successful chained job; and Gold `banking_customer_value` plus `banking_branch_daily`. Run it twice and require identical counts. Promotion from pending to developers happens only after permissions complete. Use structured state and logs, not screenshots, and leave the participant active for follow-up.
 
 ## Suggested validation order
 When changing multiple layers, validate in this order:

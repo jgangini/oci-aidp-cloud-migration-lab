@@ -3,7 +3,7 @@ import hashlib
 import json
 import threading
 from types import SimpleNamespace
-from urllib.parse import quote
+from urllib.parse import unquote
 
 import pytest
 
@@ -17,7 +17,15 @@ from app.aidp import (
     participant_key,
 )
 from app.config import Settings
-from app.notebooks import LAYER_PREFIXES, schema_name, user_notebooks
+from app.notebooks import (
+    LAYER_PREFIXES,
+    participant_folder,
+    schema_name,
+    table_name,
+    table_names,
+    user_notebooks,
+    workspace_root,
+)
 
 
 USER_OCID = "ocid1.user.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -37,7 +45,7 @@ class FakeResponse:
 
 def bare_client() -> AidpClient:
     client = object.__new__(AidpClient)
-    client.base = "https://aidp.example.invalid/20260430/aiDataPlatforms/platform"
+    client.base = "https://aidp.example.invalid/20240831/dataLakes/platform"
     client.signer = object()
     client._session_lock = threading.Lock()
     client._locks = {}
@@ -56,9 +64,14 @@ def test_participant_key_is_exact_stable_opaque_ocid_hash() -> None:
         participant_key(f"{USER_OCID} invalid")
 
 
+def test_participant_folder_preserves_common_email_and_escapes_path_delimiters() -> None:
+    assert participant_folder("JE.GG.GARCIA24@OUTLOOK.COM") == "je.gg.garcia24@outlook.com"
+    assert participant_folder("student/lab@example.com") == "student%2Flab@example.com"
+
+
 def test_notebooks_use_opaque_oci_uris_and_register_fifteen_tables() -> None:
     key = participant_key(USER_OCID)
-    notebooks = user_notebooks("retail", key, "aidp-data-test", "namespace")
+    notebooks = user_notebooks("retail", key, EMAIL, "aidp-data-test", "namespace")
     assert list(notebooks) == [
         "01_landing_retail.ipynb",
         "02_bronze_retail.ipynb",
@@ -66,11 +79,11 @@ def test_notebooks_use_opaque_oci_uris_and_register_fifteen_tables() -> None:
         "04_gold_retail.ipynb",
     ]
     rendered = json.dumps(notebooks)
-    assert f"/Workspace/lab-users/{key}/retail" in rendered
+    assert f"/Workspace/medallon/{EMAIL}/retail" in rendered
     assert f"oci://aidp-data-test@namespace/01_landing/users/{key}/retail/" in rendered
     assert "CREATE EXTERNAL TABLE IF NOT EXISTS" in rendered
     assert "quality_issues" in rendered
-    assert EMAIL not in rendered
+    assert EMAIL in rendered
     assert "/Volumes/" not in rendered
     assert rendered.count("CREATE EXTERNAL TABLE IF NOT EXISTS") == 15
     for notebook in notebooks.values():
@@ -207,20 +220,73 @@ def test_workspace_object_get_negotiates_binary_content() -> None:
     assert calls[0]["headers"] == {"Accept": "*/*"}
 
 
+def test_workspace_object_key_accepts_live_folder_path_header() -> None:
+    client = bare_client()
+    client._workspace_object = lambda _workspace, path, **_kwargs: (
+        "",
+        {"folder": path, "type": "FOLDER"},
+    )
+
+    assert client._workspace_object_key("workspace", "/Workspace/medallon") == "/Workspace/medallon"
+
+
+def test_workspace_object_key_rejects_mismatched_folder_path() -> None:
+    client = bare_client()
+    client._workspace_object = lambda *_args, **_kwargs: (
+        "",
+        {"folder": "/Workspace/medallon", "type": "FOLDER"},
+    )
+
+    with pytest.raises(AidpProvisionError, match="mismatched workspace object path"):
+        client._workspace_object_key(
+            "workspace", "/Workspace/medallon/ada@example.com"
+        )
+
+
+def test_workspace_permissions_encode_live_folder_paths() -> None:
+    client = bare_client()
+    client._workspace_object = lambda _workspace, path, **_kwargs: (
+        "",
+        {"folder": path, "type": "FOLDER"},
+    )
+    resources: list[str] = []
+
+    def ensure_permission(resource_path, *_args, **_kwargs):
+        resources.append(resource_path)
+        return False
+
+    client._ensure_permission = ensure_permission
+    client._ensure_permissions(
+        "workspace", USER_OCID, "/Workspace/medallon/ada@example.com", "job"
+    )
+
+    assert resources == [
+        "/workspaces/workspace/objects/%2FWorkspace%2Fmedallon",
+        "/workspaces/workspace/objects/%2FWorkspace%2Fmedallon%2Fada%40example.com",
+        "/workspaces/workspace/jobs/job",
+    ]
+
+
 def test_notebooks_are_compared_before_create_or_update() -> None:
     client = bare_client()
     expected = {"nbformat": 4, "cells": []}
     normalized = {**expected, "metadata": {"trusted": True}}
     notebooks = {
-        "/Workspace/lab-users/u_one/banking/exact.ipynb": normalized,
-        "/Workspace/lab-users/u_one/banking/drifted.ipynb": {"nbformat": 4, "cells": [1]},
+        "/Workspace/medallon/one@example.com/banking/exact.ipynb": normalized,
+        "/Workspace/medallon/one@example.com/banking/drifted.ipynb": {"nbformat": 4, "cells": [1]},
     }
     writes: list[tuple[str, str]] = []
+    reads: list[str] = []
+
+    client._workspace_object = lambda _workspace, path, **_kwargs: (
+        (b"", {"type": "FILE"}) if path in notebooks else (None, {})
+    )
 
     def request(method, path, *, payload=None, **_kwargs):
         target = path.rsplit("/", 1)[-1]
-        decoded = target.replace("%2F", "/")
+        decoded = unquote(target)
         if method == "GET":
+            reads.append(decoded)
             content = notebooks.get(decoded)
             return None if content is None else {"content": content}
         if method == "POST":
@@ -236,9 +302,9 @@ def test_notebooks_are_compared_before_create_or_update() -> None:
         raise AssertionError(method)
 
     client._request = request
-    exact_path = "/Workspace/lab-users/u_one/banking/exact.ipynb"
-    drifted_path = "/Workspace/lab-users/u_one/banking/drifted.ipynb"
-    missing_path = "/Workspace/lab-users/u_one/banking/missing.ipynb"
+    exact_path = "/Workspace/medallon/one@example.com/banking/exact.ipynb"
+    drifted_path = "/Workspace/medallon/one@example.com/banking/drifted.ipynb"
+    missing_path = "/Workspace/medallon/one@example.com/banking/missing.ipynb"
     assert not client._upload_notebook("workspace", exact_path, expected)
     assert not client._upload_notebook(
         "workspace", drifted_path, expected, repair_drift=False
@@ -246,6 +312,7 @@ def test_notebooks_are_compared_before_create_or_update() -> None:
     assert client._upload_notebook("workspace", drifted_path, expected)
     assert client._upload_notebook("workspace", missing_path, expected)
     assert [method for method, _ in writes] == ["PUT", "POST", "PATCH", "PUT"]
+    assert reads.count(missing_path) == 1
 
 
 def test_schema_contract_lists_real_resources_and_creates_only_missing() -> None:
@@ -264,18 +331,18 @@ def test_schema_contract_lists_real_resources_and_creates_only_missing() -> None
         }
 
     client._request = request
-    contract, changed = client._ensure_catalog_contract("catalog", key)
+    contract, changed = client._ensure_catalog_contract("catalog")
     assert changed
     assert set(contract) == set(LAYER_PREFIXES)
     assert len(posts) == 4
-    assert client._ensure_catalog_contract("catalog", key) == (contract, False)
+    assert client._ensure_catalog_contract("catalog") == (contract, False)
     assert len(posts) == 4
 
 
 def test_job_is_returned_only_after_exact_four_stage_contract_is_visible() -> None:
     client = bare_client()
     key = participant_key(USER_OCID)
-    root = f"/Workspace/lab-users/{key}/banking"
+    root = workspace_root(EMAIL, "banking")
     notebook_names = [
         "01_landing_banking.ipynb",
         "02_bronze_banking.ipynb",
@@ -295,7 +362,7 @@ def test_job_is_returned_only_after_exact_four_stage_contract_is_visible() -> No
 
     client._request = request
     job_name, job_key, changed = client._ensure_job(
-        "workspace", "compute", key, "banking", notebooks
+        "workspace", "compute", key, "banking", root, notebooks
     )
     assert job_key == "job-key"
     assert job_name == expected_job_name
@@ -315,7 +382,7 @@ def test_job_is_returned_only_after_exact_four_stage_contract_is_visible() -> No
     client._request = lambda method, _path, **_kwargs: (
         writes.append(method) if method == "PUT" else published
     )
-    assert client._ensure_job("workspace", "compute", key, "banking", notebooks) == (
+    assert client._ensure_job("workspace", "compute", key, "banking", root, notebooks) == (
         expected_job_name,
         "job-key",
         False,
@@ -326,7 +393,7 @@ def test_job_is_returned_only_after_exact_four_stage_contract_is_visible() -> No
         {**published, "tasks": published["tasks"][:-1]} if method == "GET" else None
     )
     with pytest.raises(AidpProvisionPending, match="complete participant workflow") as pending:
-        client._ensure_job("workspace", "compute", key, "banking", notebooks)
+        client._ensure_job("workspace", "compute", key, "banking", root, notebooks)
     assert pending.value.phase == "content"
 
     wrong_type = [{**published["tasks"][0], "type": "PYTHON_TASK"}, *published["tasks"][1:]]
@@ -344,12 +411,13 @@ def test_job_is_returned_only_after_exact_four_stage_contract_is_visible() -> No
         "compute",
         key,
         "banking",
+        root,
         notebooks,
         repair_drift=False,
     ) == (expected_job_name, "job-key", False)
     assert drift_writes == []
     with pytest.raises(AidpProvisionPending, match="complete participant workflow"):
-        client._ensure_job("workspace", "compute", key, "banking", notebooks)
+        client._ensure_job("workspace", "compute", key, "banking", root, notebooks)
     assert drift_writes == ["PUT"]
 
 
@@ -415,15 +483,10 @@ def test_permission_requires_user_and_exact_inheritance_then_rechecks() -> None:
     assert len(posts) == post_count
 
 
-class FakeServiceError(Exception):
-    def __init__(self, status: int) -> None:
-        self.status = status
-
-
 def test_control_manifest_is_workspace_scoped_idempotent_and_industry_is_immutable() -> None:
     client = bare_client()
     key = participant_key(USER_OCID)
-    control_path = f"/Workspace/lab-users/.control/{key}.json"
+    control_path = f"/Workspace/medallon/.control/{key}.json"
     objects: dict[str, tuple[object, dict[str, str]]] = {}
     writes: list[str] = []
     client._workspace_object = lambda _workspace, path, **_kwargs: objects.get(
@@ -440,18 +503,24 @@ def test_control_manifest_is_workspace_scoped_idempotent_and_industry_is_immutab
 
     client._request = request
 
-    first = client._ensure_manifest("workspace", key, "banking")
-    assert first == {"participant_key": key, "industry": "banking", "phase": "workspace"}
+    first = client._ensure_manifest("workspace", key, EMAIL, "banking")
+    assert first == {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": f"/Workspace/medallon/{EMAIL}/banking",
+        "phase": "workspace",
+    }
     assert writes == [control_path]
-    assert client._ensure_manifest("workspace", key, "banking") == first
+    assert client._ensure_manifest("workspace", key, EMAIL, "banking") == first
     assert writes == [control_path]
     client._advance_manifest("workspace", first, "schemas")
-    assert client._ensure_manifest("workspace", key, "banking")["phase"] == "schemas"
+    assert client._ensure_manifest("workspace", key, EMAIL, "banking")["phase"] == "schemas"
     assert writes == [control_path, control_path]
     client._advance_manifest("workspace", first, "schemas")
     assert writes == [control_path, control_path]
-    with pytest.raises(AidpProvisionConflict, match="delete and recreate"):
-        client._ensure_manifest("workspace", key, "retail")
+    with pytest.raises(AidpProvisionConflict, match="reset the participant environment"):
+        client._ensure_manifest("workspace", key, EMAIL, "retail")
 
     objects[control_path] = (
         b"{invalid-json",
@@ -465,8 +534,14 @@ def test_provisioning_reconciles_real_inventory_and_repairs_active_drift() -> No
     client = bare_client()
     client.settings = SimpleNamespace(bucket_name="bucket", objectstorage_namespace="namespace")
     key = participant_key(USER_OCID)
-    manifest = {"participant_key": key, "industry": "banking", "phase": "workspace"}
-    root = f"/Workspace/lab-users/{key}/banking"
+    manifest = {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": f"/Workspace/medallon/{EMAIL}/banking",
+        "phase": "workspace",
+    }
+    root = f"/Workspace/medallon/{EMAIL}/banking"
     folders: set[str] = set()
     files: dict[str, bytes] = {}
     notebooks: dict[str, dict] = {}
@@ -486,11 +561,11 @@ def test_provisioning_reconciles_real_inventory_and_repairs_active_drift() -> No
             writes["folders"] += 1
         return changed
 
-    def ensure_manifest(_workspace, _key, _industry):
-        assert "/Workspace/lab-users/.control" in folders
+    def ensure_manifest(_workspace, _key, _email, _industry):
+        assert "/Workspace/medallon/.control" in folders
         return manifest
 
-    def ensure_schemas(_catalog, _key):
+    def ensure_schemas(_catalog):
         changed = not state["schemas"]
         state["schemas"] = True
         writes["schemas"] += int(changed)
@@ -539,10 +614,10 @@ def test_provisioning_reconciles_real_inventory_and_repairs_active_drift() -> No
     assert phases == ["schemas", "content", "permissions"]
     assert manifest["phase"] == "permissions"
     assert len(folders) == 5
-    assert "/Workspace/lab-users/.control" in folders
+    assert "/Workspace/medallon/.control" in folders
     assert len(files) == 5  # one participant manifest plus four source CSVs
     assert len(notebooks) == 4
-    assert all(path.startswith(f"/Workspace/lab-users/{key}/banking/") for path in notebooks)
+    assert all(path.startswith(f"/Workspace/medallon/{EMAIL}/banking/") for path in notebooks)
     assert all("/notebooks/" not in path for path in notebooks)
 
     material = client._provision_user(USER_OCID, EMAIL, "banking")
@@ -550,7 +625,7 @@ def test_provisioning_reconciles_real_inventory_and_repairs_active_drift() -> No
         EMAIL,
         "banking",
         key,
-        f"/Workspace/lab-users/{key}/banking",
+        f"/Workspace/medallon/{EMAIL}/banking",
         job_name,
     )
     assert manifest["phase"] == "active"
@@ -607,228 +682,263 @@ def test_local_client_is_idempotent_conflict_safe_and_cleanup_is_exact() -> None
         assert len(client.users) == 1
         with pytest.raises(AidpProvisionConflict, match="delete and recreate"):
             await client.provision_user(USER_OCID, EMAIL, "retail")
+        operation_id = "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43"
+        reset = await client.reset_user(USER_OCID, EMAIL, "retail", operation_id)
+        assert reset.industry == "retail"
+        assert await client.reset_user(USER_OCID, EMAIL, "retail", operation_id) == reset
+        assert await client.list_user_industries([USER_OCID]) == {USER_OCID: "retail"}
+        with pytest.raises(AidpProvisionConflict, match="another industry"):
+            await client.reset_user(USER_OCID, EMAIL, "banking", operation_id)
         await client.cleanup_user(USER_OCID)
         assert client.users == {}
+        assert client._reset_operations == {}
 
     asyncio.run(run())
 
 
-class CleanupStorage:
-    def __init__(self, prefixes: list[str]) -> None:
-        self.objects = {f"{prefix}part-000.csv": b"data" for prefix in prefixes}
-        self.deleted: list[str] = []
-        self.pages: list[tuple[str, str | None]] = []
+def test_reset_journal_changes_industry_and_same_operation_never_cleans_twice() -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    operation_id = "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43"
+    manifest = {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": workspace_root(EMAIL, "banking"),
+        "phase": "active",
+    }
+    cleanups: list[bool] = []
+    deleted_paths: list[str] = []
+    writes: list[str] = []
+    client._workspace = lambda: {"key": "workspace"}
+    client._ensure_workspace_layout = lambda *_args: False
+    client._manifest = lambda *_args: manifest
+    client._write_manifest = lambda _workspace, _key, value: writes.append(value["reset"]["phase"])
+    client._cleanup_user = lambda _key, preserve_manifest=False: cleanups.append(preserve_manifest)
+    client._delete_workspace_path = lambda _workspace, path, _message: deleted_paths.append(path)
 
-    def list_objects(self, _namespace, _bucket, *, prefix, start):
-        self.pages.append((prefix, start))
-        return SimpleNamespace(
-            data=SimpleNamespace(
-                objects=[
-                    SimpleNamespace(name=name)
-                    for name in sorted(self.objects)
-                    if name.startswith(prefix)
-                ],
-                next_start_with=None,
-            )
+    def provision(_ocid, email, industry):
+        manifest["phase"] = "active"
+        return UserMaterial(
+            email,
+            industry,
+            key,
+            workspace_root(email, industry),
+            f"wf_{key}_{industry}_medallion",
         )
 
-    def delete_object(self, _namespace, _bucket, name):
-        if name not in self.objects:
-            raise FakeServiceError(404)
-        self.deleted.append(name)
+    client._provision_user = provision
+    first = client._reset_user(USER_OCID, EMAIL, "retail", operation_id)
+    second = client._reset_user(USER_OCID, EMAIL, "retail", operation_id)
+
+    assert first == second
+    assert cleanups == [True]
+    assert deleted_paths == ["/Workspace/lab-users/ada@example.com"]
+    assert writes == ["cleanup", "provision", "complete"]
+    assert manifest["industry"] == "retail"
+    assert manifest["reset"] == {
+        "operation_id": operation_id,
+        "target_industry": "retail",
+        "target_workspace_path": workspace_root(EMAIL, "retail"),
+        "phase": "complete",
+    }
 
 
-class CleanupScenario:
-    industries = ("banking", "telecommunications", "retail", "healthcare")
+def test_reset_reports_destructive_reconciliation_as_cleanup() -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    manifest = {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": workspace_root(EMAIL, "banking"),
+        "phase": "active",
+    }
+    client._workspace = lambda: {"key": "workspace"}
+    client._ensure_workspace_layout = lambda *_args: False
+    client._manifest = lambda *_args: manifest
+    client._write_manifest = lambda *_args: None
 
-    def __init__(self) -> None:
-        self.client = bare_client()
-        self.key = participant_key(USER_OCID)
-        self.client.settings = SimpleNamespace(
-            objectstorage_namespace="namespace", bucket_name="bucket"
+    def pending_cleanup(*_args, **_kwargs):
+        raise AidpProvisionPending("workflow deletion is still running", "content")
+
+    client._cleanup_user = pending_cleanup
+    with pytest.raises(AidpProvisionPending, match="workflow deletion") as pending:
+        client._reset_user(
+            USER_OCID,
+            EMAIL,
+            "retail",
+            "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43",
         )
-        self.client._oci = SimpleNamespace(
-            exceptions=SimpleNamespace(ServiceError=FakeServiceError)
+    assert pending.value.phase == "cleanup"
+
+
+def test_reset_rejects_a_different_operation_while_cleanup_is_running() -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    manifest = {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": workspace_root(EMAIL, "banking"),
+        "phase": "active",
+        "reset": {
+            "operation_id": "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43",
+            "target_industry": "retail",
+            "target_workspace_path": workspace_root(EMAIL, "retail"),
+            "phase": "cleanup",
+        },
+    }
+    client._workspace = lambda: {"key": "workspace"}
+    client._ensure_workspace_layout = lambda *_args: False
+    client._manifest = lambda *_args: manifest
+    with pytest.raises(AidpProvisionConflict, match="already in progress"):
+        client._reset_user(
+            USER_OCID,
+            EMAIL,
+            "retail",
+            "2ea8cabb-77b5-4d42-80a2-514503510ce8",
         )
-        prefixes = [
-            f"{prefix}/users/{self.key}/" for prefix in LAYER_PREFIXES.values()
-        ]
-        self.client.object_storage = CleanupStorage(prefixes)
-        self.client._workspace = lambda: {"key": "workspace"}
-        self.client._catalog = lambda: {"key": "catalog"}
-        self.schema_keys = {
-            layer: f"schema-{layer}" for layer in LAYER_PREFIXES
+
+
+def test_user_industries_list_jobs_once_and_fall_back_to_pending_manifest() -> None:
+    client = bare_client()
+    second_ocid = "ocid1.user.oc1..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    first_key = participant_key(USER_OCID)
+    second_key = participant_key(second_ocid)
+    calls: list[str] = []
+    client._workspace = lambda: {"key": "workspace"}
+
+    def listed(path, **_kwargs):
+        calls.append(path)
+        return [{"displayName": f"wf_{first_key}_banking_medallion", "key": "job"}]
+
+    client._list = listed
+    client._manifest = lambda _workspace, key: (
+        {
+            "layout_version": 2,
+            "participant_key": second_key,
+            "industry": "healthcare",
+            "workspace_path": workspace_root("grace@example.com", "healthcare"),
+            "phase": "content",
         }
-        self.exact_schemas = [
+        if key == second_key
+        else None
+    )
+    client._workspace_json = lambda *_args: None
+
+    assert client._user_industries([USER_OCID, second_ocid]) == {
+        USER_OCID: "banking",
+        second_ocid: "healthcare",
+    }
+    assert calls == ["/workspaces/workspace/jobs"]
+
+
+def test_shared_schema_cleanup_deletes_only_exact_participant_tables() -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    schemas = {
+        layer: {"displayName": schema_name(layer), "key": f"schema-{layer}"}
+        for layer in LAYER_PREFIXES
+    }
+    tables = {
+        schema["key"]: [
             {
-                "displayName": schema_name(self.key, layer),
-                "key": schema_key,
-                "lifecycleState": "ACTIVE",
-            }
-            for layer, schema_key in self.schema_keys.items()
-        ]
-        self.near_schema = {
-            "displayName": f"{schema_name(self.key, 'landing')}_archive",
-            "key": "near-schema",
-        }
-        self.exact_jobs = [
+                "displayName": table_names(key, "banking", layer)[0],
+                "key": f"{schema['key']}-participant",
+            },
             {
-                "displayName": f"wf_{self.key}_{industry}_medallion",
-                "key": f"job-{industry}",
-                "lifecycleState": "ACTIVE",
-            }
-            for industry in self.industries
+                "displayName": table_name("u_ffffffffffffffff", "banking", "branches"),
+                "key": f"{schema['key']}-other",
+            },
         ]
-        self.near_job = {
-            "displayName": f"wf_{self.key}_banking_medallion_archive",
-            "key": "near-job",
-        }
-        self.resources = {
-            "jobs": [*self.exact_jobs, self.near_job],
-            "schemas": [*self.exact_schemas, self.near_schema],
-        }
-        self.tables = {
-            schema_key: [
-                {"displayName": "arbitrary_table_name", "key": f"{schema_key}-one"},
-                {"displayName": "quality_issues", "key": f"{schema_key}-two"},
-            ]
-            for schema_key in self.schema_keys.values()
-        }
-        self.table_queries: list[str] = []
-        self.participant_path = f"/Workspace/lab-users/{self.key}"
-        self.control_path = self.client._control_manifest_path(self.key)
-        self.workspace_objects = {
-            self.participant_path: (None, {"object-key": "participant-folder"}),
-            self.control_path: (
-                b"{corrupt-json",
-                {"object-key": "control-file", "object-type": "FILE"},
-            ),
-        }
-        self.requests: list[tuple[str, str, dict]] = []
-        self.client._list = self.list_resources
-        self.client._request = self.request
-        self.client._workspace_object = self.workspace_object
+            for layer, schema in schemas.items()
+    }
+    deleted: list[str] = []
+    client._list = lambda path, *, params=None, **_kwargs: (
+        list(schemas.values()) if path == "/schemas" else tables[params["schemaKey"]]
+    )
+    client._request = lambda method, path, **_kwargs: deleted.append(path)
 
-    def list_resources(self, path, *, params=None, **_kwargs):
-        if path.endswith("/jobs"):
-            return self.resources["jobs"]
-        if path == "/schemas":
-            return self.resources["schemas"]
-        if path == "/tables":
-            self.table_queries.append(params["schemaKey"])
-            return self.tables[params["schemaKey"]]
-        return []
+    with pytest.raises(AidpProvisionPending, match="table deletion"):
+        client._cleanup_tables("catalog", key)
+    assert set(deleted) == {
+        f"/tables/{schema['key']}-participant" for schema in schemas.values()
+    }
+    assert not any(path.startswith("/schemas/") for path in deleted)
 
-    def workspace_object(self, _workspace, path, **_kwargs):
-        return self.workspace_objects.get(path, (None, {}))
-
-    def request(self, method, path, **kwargs):
-        self.requests.append((method, path, kwargs))
-        for job in self.exact_jobs:
-            if path == f"/workspaces/workspace/jobs/{job['key']}":
-                job["lifecycleState"] = "DELETING"
-        if not path.startswith("/schemas/"):
-            return
-        schema_key = path.rsplit("/", 1)[-1]
-        for schema in self.exact_schemas:
-            if schema["key"] == schema_key:
-                schema["lifecycleState"] = "DELETING"
-
-    def expect_pending(self, message: str, phase: str) -> None:
-        with pytest.raises(AidpProvisionPending, match=message) as pending:
-            self.client._cleanup_user(self.key)
-        assert pending.value.phase == phase
-
-    def deleted_paths(self) -> set[str]:
-        return {
-            path for method, path, _ in self.requests if method == "DELETE"
-        }
-
-    def run_jobs_phase(self) -> None:
-        self.expect_pending("workflow deletion", "content")
-        assert all(job["lifecycleState"] == "DELETING" for job in self.exact_jobs)
-        assert self.deleted_paths() == {
-            f"/workspaces/workspace/jobs/job-{industry}"
-            for industry in self.industries
-        }
-        self.resources["jobs"] = [self.near_job]
-
-    def run_tables_phase(self) -> None:
-        self.expect_pending("table deletion", "schemas")
-        expected_tables = {
-            f"/tables/{schema_key}-{suffix}"
-            for schema_key in self.schema_keys.values()
-            for suffix in ("one", "two")
-        }
-        assert expected_tables.issubset(self.deleted_paths())
-        assert not any(
-            path.startswith("/schemas/") for path in self.deleted_paths()
-        )
-        for schema_tables in self.tables.values():
-            schema_tables.clear()
-
-    def run_schemas_phase(self) -> None:
-        self.expect_pending("schema deletion", "schemas")
-        assert all(
-            schema["lifecycleState"] == "DELETING"
-            for schema in self.exact_schemas
-        )
-        self.resources["schemas"] = [self.near_schema]
-
-    def run_storage_phase(self) -> None:
-        self.expect_pending("Object Storage cleanup", "content")
-        data_objects = set(self.client.object_storage.objects)
-        assert data_objects.issubset(set(self.client.object_storage.deleted))
-        self.client.object_storage.objects.clear()
-
-    def run_workspace_phase(self) -> str:
-        self.expect_pending("workspace deletion", "content")
-        participant_delete = (
-            f"/workspaces/workspace/objects/{quote(self.participant_path, safe='')}"
-        )
-        assert any(
-            path == participant_delete and kwargs["headers"] == {"Accept": "*/*"}
-            for _, path, kwargs in self.requests
-        )
-        self.workspace_objects.pop(self.participant_path)
-        return participant_delete
-
-    def run_control_phase(self, participant_delete: str) -> str:
-        self.expect_pending("control manifest deletion", "content")
-        control_delete = (
-            f"/workspaces/workspace/objects/{quote(self.control_path, safe='')}"
-        )
-        delete_order = [
-            path for method, path, _ in self.requests if method == "DELETE"
-        ]
-        assert delete_order.index(control_delete) > delete_order.index(participant_delete)
-        self.workspace_objects.pop(self.control_path)
-        return control_delete
-
-    def finish(self, participant_delete: str, control_delete: str) -> None:
-        self.client._cleanup_user(self.key)
-        deleted_paths = self.deleted_paths()
-        assert set(self.schema_keys.values()).issubset(set(self.table_queries))
-        assert {
-            f"/schemas/{schema_key}" for schema_key in self.schema_keys.values()
-        }.issubset(deleted_paths)
-        assert all(
-            "near-schema" not in path and "near-job" not in path
-            for path in deleted_paths
-        )
-        assert participant_delete in deleted_paths
-        assert control_delete in deleted_paths
+    for values in tables.values():
+        values[:] = [table for table in values if table["key"].endswith("-other")]
+    client._cleanup_tables("catalog", key)
 
 
-def test_cleanup_is_staged_exact_and_deletes_corrupt_control_manifest_last() -> None:
-    scenario = CleanupScenario()
-    scenario.run_jobs_phase()
-    scenario.run_tables_phase()
-    scenario.run_schemas_phase()
-    scenario.run_storage_phase()
-    participant_delete = scenario.run_workspace_phase()
-    control_delete = scenario.run_control_phase(participant_delete)
-    scenario.finish(participant_delete, control_delete)
+def test_cleanup_uses_manifest_workspace_path_and_deletes_control_last() -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    workspace_path = workspace_root(EMAIL, "banking")
+    calls: list[str] = []
+    client._workspace = lambda: {"key": "workspace"}
+    client._catalog = lambda: {"key": "catalog"}
+    client._manifest = lambda _workspace, _key: {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": workspace_path,
+    }
+    client._cleanup_jobs = lambda *_args: calls.append("jobs")
+    client._cleanup_tables = lambda *_args: calls.append("tables")
+    client._cleanup_legacy_tables = lambda *_args: calls.append("legacy_tables")
+    client._cleanup_legacy_schemas = lambda *_args: calls.append("legacy")
+    client._cleanup_object_storage = lambda *_args: calls.append("storage")
+    client._delete_workspace_path = lambda _workspace, path, _message: calls.append(path)
+
+    client._cleanup_user(key)
+
+    assert calls[:5] == ["jobs", "tables", "legacy_tables", "legacy", "storage"]
+    assert calls[5] == workspace_path.rsplit("/", 1)[0]
+    assert calls[-2:] == [
+        client._control_manifest_path(key),
+        client._legacy_control_manifest_path(key),
+    ]
+
+
+def test_reset_cleanup_preserves_only_the_current_control_manifest() -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    calls: list[str] = []
+    client._workspace = lambda: {"key": "workspace"}
+    client._catalog = lambda: {"key": "catalog"}
+    client._manifest = lambda *_args: {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": workspace_root(EMAIL, "banking"),
+    }
+    client._cleanup_jobs = lambda *_args: None
+    client._cleanup_tables = lambda *_args: None
+    client._cleanup_legacy_tables = lambda *_args: None
+    client._cleanup_legacy_schemas = lambda *_args: None
+    client._cleanup_object_storage = lambda *_args: None
+    client._delete_workspace_path = lambda _workspace, path, _message: calls.append(path)
+
+    client._cleanup_user(key, preserve_manifest=True)
+
+    assert client._control_manifest_path(key) not in calls
+    assert client._legacy_control_manifest_path(key) in calls
+
+
+def test_cleanup_rejects_untrusted_manifest_workspace_path() -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    client._workspace = lambda: {"key": "workspace"}
+    client._manifest = lambda _workspace, _key: {
+        "layout_version": 2,
+        "participant_key": key,
+        "industry": "banking",
+        "workspace_path": "/Workspace/Shared/not-ours/banking",
+    }
+    with pytest.raises(AidpProvisionError, match="exact workspace path"):
+        client._cleanup_user(key)
 
 
 def test_async_entrypoints_use_participant_lock_and_to_thread(monkeypatch) -> None:
@@ -841,11 +951,19 @@ def test_async_entrypoints_use_participant_lock_and_to_thread(monkeypatch) -> No
     def cleanup(*args):
         calls.append(("cleanup_impl", args))
 
+    def reset(*args):
+        return args
+
+    def industries(*args):
+        return {args[0][0]: "banking"}
+
     def health():
         calls.append(("health_impl", ()))
 
     client._provision_user = provision
     client._cleanup_user = cleanup
+    client._reset_user = reset
+    client._user_industries = industries
     client._healthcheck = health
 
     async def to_thread(function, *args):
@@ -861,12 +979,34 @@ def test_async_entrypoints_use_participant_lock_and_to_thread(monkeypatch) -> No
             "banking",
         )
         await client.cleanup_user(USER_OCID)
+        assert await client.reset_user(
+            USER_OCID,
+            EMAIL,
+            "retail",
+            "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43",
+        ) == (
+            USER_OCID,
+            EMAIL,
+            "retail",
+            "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43",
+        )
+        assert await client.list_user_industries([USER_OCID]) == {USER_OCID: "banking"}
         await client.healthcheck()
 
     asyncio.run(run())
     assert participant_key(USER_OCID) in client._locks
     assert ("provision", (USER_OCID, EMAIL, "banking")) in calls
     assert ("cleanup", (participant_key(USER_OCID),)) in calls
+    assert (
+        "reset",
+        (
+            USER_OCID,
+            EMAIL,
+            "retail",
+            "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43",
+        ),
+    ) in calls
+    assert ("industries", ([USER_OCID],)) in calls
     assert ("health", ()) in calls
 
 
@@ -904,8 +1044,8 @@ def test_service_key_initialization_and_strict_healthcheck(monkeypatch) -> None:
     )
     client = AidpClient(settings)
     assert client.base == (
-        "https://aidpprod.us-chicago-1.oci.oraclecloud.com/20260430/"
-        "aiDataPlatforms/platform"
+        "https://datalake.us-chicago-1.oci.oraclecloud.com/20240831/"
+        "dataLakes/platform"
     )
     assert loaded == [("/etc/aidp-lab/oci/config", "DEFAULT")]
     assert signer_args[0]["private_key_file_location"] == "/etc/aidp-lab/oci/key.pem"

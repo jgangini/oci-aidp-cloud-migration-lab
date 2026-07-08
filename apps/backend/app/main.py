@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable, Literal
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -16,6 +18,7 @@ from .aidp import (
     AidpProvisionError,
     AidpProvisionPending,
     LocalAidpClient,
+    UserMaterial,
 )
 from .config import Settings, SettingsStore
 from .identity import IdentityClient, IdentityConflict, IdentityPending, IdentityRejected, LocalIdentityClient
@@ -34,6 +37,8 @@ LOCAL_COOKIE_NAME = "aidp_lab_admin"
 CODE_PATTERN = re.compile(r"^[A-Z]{4}-[0-9]{4}$")
 EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
 logger = logging.getLogger(__name__)
+HEALTH_SUCCESS_TTL_SECONDS = 30
+HEALTH_FAILURE_TTL_SECONDS = 5
 
 
 Industry = Literal["banking", "telecommunications", "retail", "healthcare"]
@@ -78,6 +83,12 @@ class AdminUserRequest(UserRequest):
     pass
 
 
+class AdminResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    industry: Industry
+    operation_id: UUID
+
+
 class SettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     aidp_url: str = Field(min_length=1, max_length=2_048)
@@ -86,6 +97,26 @@ class SettingsRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
+
+
+def _material_payload(
+    material: UserMaterial,
+    email: str,
+    industry: str,
+    aidp_url: str,
+) -> dict[str, Any]:
+    content: dict[str, Any] = {
+        "status": "active",
+        "email": email,
+        "participant_key": material.participant_key,
+        "industry": industry,
+        "workspace_path": material.workspace_path,
+        "job_name": material.job_name,
+        "aidp_url": aidp_url,
+    }
+    if not aidp_url:
+        content["message"] = "Your account is ready. Ask the lab administrator to configure the Workbench URL."
+    return content
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -108,6 +139,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.login_limiter = RateLimiter(5, 60)
     app.state.identity_client = None
     app.state.aidp_client = None
+    app.state.health_lock = asyncio.Lock()
+    app.state.health_expires_at = 0.0
+    app.state.health_error = False
 
     def default_factory() -> IdentityClient | LocalIdentityClient:
         if app.state.identity_client is None:
@@ -198,30 +232,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=202,
                 content={"status": "pending", "phase": "permissions", "message": str(exc)},
             )
-        content: dict[str, Any] = {
-            "status": "active",
-            "email": result.email,
-            "participant_key": material.participant_key,
-            "industry": industry,
-            "workspace_path": material.workspace_path,
-            "job_name": material.job_name,
-            "aidp_url": app.state.settings_store.get_workbench_url(),
-        }
-        if not content["aidp_url"]:
-            content["message"] = "Your account is ready. Ask the lab administrator to configure the Workbench URL."
+        content = _material_payload(
+            material,
+            result.email,
+            industry,
+            app.state.settings_store.get_workbench_url(),
+        )
         return JSONResponse(status_code=201 if result.status == "created" else 200, content=content)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
         if not settings.identity_ready() or not settings.aidp_ready():
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Lab services are unavailable")
-        try:
-            await asyncio.gather(
-                app.state.identity_factory().healthcheck(),
-                app.state.aidp_factory().healthcheck(),
-            )
-        except Exception as exc:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Lab control services are unavailable") from exc
+        async with app.state.health_lock:
+            now = time.monotonic()
+            if now >= app.state.health_expires_at:
+                checks = (
+                    ("identity", app.state.identity_factory().healthcheck()),
+                    ("aidp", app.state.aidp_factory().healthcheck()),
+                )
+                results = await asyncio.gather(
+                    *(check for _, check in checks), return_exceptions=True
+                )
+                failures = [
+                    (component, result)
+                    for (component, _), result in zip(checks, results, strict=True)
+                    if isinstance(result, BaseException)
+                ]
+                app.state.health_error = bool(failures)
+                app.state.health_expires_at = now + (
+                    HEALTH_FAILURE_TTL_SECONDS if failures else HEALTH_SUCCESS_TTL_SECONDS
+                )
+                for component, failure in failures:
+                    logger.warning(
+                        "Lab health probe failed for %s (%s)",
+                        component,
+                        type(failure).__name__,
+                    )
+            if app.state.health_error:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "Lab control services are unavailable",
+                )
         return {"status": "ok"}
 
     @app.get("/api/public/config")
@@ -307,7 +359,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def admin_users(_admin: str = Depends(require_admin)) -> dict[str, list[dict]]:
         require_identity()
         client = app.state.identity_factory()
-        return {"users": await client.list_lab_users()}
+        users = [dict(user) for user in await client.list_lab_users()]
+        user_ocids = [
+            str(user["ocid"])
+            for user in users
+            if user.get("managed") and str(user.get("ocid") or "").startswith("ocid1.user.")
+        ]
+        industries: dict[str, str] = {}
+        if settings.aidp_ready() and user_ocids:
+            try:
+                industries = await app.state.aidp_factory().list_user_industries(user_ocids)
+            except (AidpProvisionPending, AidpProvisionError) as exc:
+                logger.warning("AIDP participant industry inventory is unavailable (%s)", type(exc).__name__)
+        for user in users:
+            user["industry"] = industries.get(str(user.get("ocid") or ""))
+            user.pop("ocid", None)
+        return {"users": users}
 
     @app.post("/api/admin/users")
     async def admin_create_user(payload: AdminUserRequest, _admin: str = Depends(require_admin)) -> JSONResponse:
@@ -315,6 +382,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.aidp_ready():
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AIDP workspace provisioning is not configured")
         return await provision_user(payload.name, payload.email, payload.industry)
+
+    @app.post("/api/admin/users/{user_id}/reset")
+    async def admin_reset_user(
+        user_id: str,
+        payload: AdminResetRequest,
+        _admin: str = Depends(require_admin),
+    ) -> JSONResponse:
+        require_identity()
+        if not settings.aidp_ready():
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AIDP workspace provisioning is not configured")
+        identity = app.state.identity_factory()
+        try:
+            user = await identity.get_lab_user(user_id)
+            if user is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Lab user not found")
+            material = await app.state.aidp_factory().reset_user(
+                user["ocid"],
+                user["email"],
+                payload.industry,
+                str(payload.operation_id),
+            )
+            await identity.activate_registration(user["id"])
+        except IdentityConflict as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IdentityPending as exc:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "pending",
+                    "phase": "permissions",
+                    "operation_id": str(payload.operation_id),
+                    "message": str(exc),
+                },
+            )
+        except AidpProvisionPending as exc:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "pending",
+                    "phase": exc.phase,
+                    "operation_id": str(payload.operation_id),
+                    "message": str(exc),
+                },
+            )
+        except AidpProvisionConflict as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except AidpProvisionError as exc:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        content = _material_payload(
+            material,
+            user["email"],
+            payload.industry,
+            app.state.settings_store.get_workbench_url(),
+        )
+        content["operation_id"] = str(payload.operation_id)
+        content["message"] = "The AIDP environment was reset successfully."
+        return JSONResponse(content=content)
 
     @app.delete("/api/admin/users/{user_id}", status_code=204)
     async def admin_delete_user(user_id: str, _admin: str = Depends(require_admin)) -> Response:

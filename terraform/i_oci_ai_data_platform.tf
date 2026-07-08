@@ -38,7 +38,11 @@ data "oci_identity_tenancy" "current" {
 
 locals {
   aidp_web_socket_endpoint = oci_ai_data_platform_ai_data_platform.lab.web_socket_endpoint == null ? "" : oci_ai_data_platform_ai_data_platform.lab.web_socket_endpoint
-  aidp_endpoint_host       = element(split("/", trimprefix(trimprefix(local.aidp_web_socket_endpoint, "https://"), "wss://")), 0)
+  aidp_alias_key           = oci_ai_data_platform_ai_data_platform.lab.alias_key == null ? "" : oci_ai_data_platform_ai_data_platform.lab.alias_key
+  aidp_region_key          = var.region == "us-chicago-1" ? "ord" : ""
+  aidp_alias_endpoint      = local.aidp_alias_key == "" ? "" : "${local.aidp_alias_key}${local.aidp_region_key}"
+  aidp_endpoint            = local.aidp_web_socket_endpoint != "" ? local.aidp_web_socket_endpoint : local.aidp_alias_endpoint
+  aidp_endpoint_host       = element(split("/", trimprefix(trimprefix(local.aidp_endpoint, "https://"), "wss://")), 0)
   aidp_workbench_host      = local.aidp_endpoint_host == "" ? "" : (endswith(local.aidp_endpoint_host, ".datalake.oci.oraclecloud.com") ? local.aidp_endpoint_host : "${local.aidp_endpoint_host}.datalake.oci.oraclecloud.com")
   aidp_workbench_url       = local.aidp_workbench_host == "" ? "" : "https://${local.aidp_workbench_host}#?tenant=${data.oci_identity_tenancy.current.name}&domain=${local.default_domain.display_name}"
 }

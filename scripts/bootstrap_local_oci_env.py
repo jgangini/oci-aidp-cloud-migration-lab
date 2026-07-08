@@ -72,6 +72,46 @@ def one(label: str, values: Iterable[Any]) -> Any:
     return matches[0]
 
 
+def one_named(label: str, values: Iterable[Any], expected_name: str) -> Any:
+    return one(
+        label,
+        (
+            item
+            for item in values
+            if str(getattr(item, "name", "")) == expected_name
+        ),
+    )
+
+
+def platform_endpoint(platform: Any, region: str) -> str:
+    endpoint = str(getattr(platform, "web_socket_endpoint", "") or "").strip()
+    if endpoint:
+        return endpoint
+    alias = str(getattr(platform, "alias_key", "") or "").strip()
+    if not alias:
+        return ""
+    region_key = next(
+        (
+            short_name
+            for short_name, region_name in oci.regions.REGIONS_SHORT_NAMES.items()
+            if region_name == region
+        ),
+        "",
+    )
+    if not region_key:
+        raise RuntimeError(f"OCI SDK has no short region key for {region}")
+    return alias if alias.endswith(region_key) else f"{alias}{region_key}"
+
+
+def platform_workspace_name(platform: Any, suffix: str) -> str:
+    published = str(getattr(platform, "default_workspace_name", "") or "").strip()
+    if published:
+        return published
+    if str(getattr(platform, "display_name", "") or "") != f"aidp-lab-{suffix}":
+        raise RuntimeError("AIDP platform name does not match the selected lab suffix")
+    return f"aidp-lab-workspace-{suffix}"
+
+
 def resources(method: Any, **kwargs: Any) -> list[Any]:
     """Read both OCI `items` and Identity Domains SCIM `resources` responses."""
     response = method(**kwargs)
@@ -181,26 +221,26 @@ def discover(config: dict[str, str], suffix: str | None) -> dict[str, str]:
     platform = aidp.get_ai_data_platform(platform_summary.id).data
     object_storage = oci.object_storage.ObjectStorageClient(config)
     namespace = str(object_storage.get_namespace().data)
-    bucket = one(
+    bucket = one_named(
         "AIDP data bucket",
         resources(
             object_storage.list_buckets,
             namespace_name=namespace,
             compartment_id=platform.compartment_id,
-            name=f"aidp-data-{selected_suffix}",
         ),
+        f"aidp-data-{selected_suffix}",
     )
     return {
         "IDENTITY_DOMAIN_URL": domain.url.rstrip("/"),
         "IDENTITY_DEVELOPER_GROUP_ID": developer_group.id,
         "IDENTITY_PENDING_GROUP_ID": pending_group.id,
         "AIDP_WORKBENCH_URL": build_workbench_url(
-            str(getattr(platform, "web_socket_endpoint", "") or ""),
+            platform_endpoint(platform, config["region"]),
             identity.get_tenancy(config["tenancy"]).data.name,
             domain.display_name,
         ),
         "AIDP_PLATFORM_ID": platform.id,
-        "AIDP_WORKSPACE_NAME": platform.default_workspace_name,
+        "AIDP_WORKSPACE_NAME": platform_workspace_name(platform, selected_suffix),
         "AIDP_REGION": config["region"],
         "OBJECTSTORAGE_NAMESPACE": namespace,
         "BUCKET_NAME": str(bucket.name),

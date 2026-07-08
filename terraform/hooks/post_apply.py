@@ -20,7 +20,7 @@ from urllib.parse import quote
 from oci._vendor import requests
 
 
-API_VERSION = "20260430"
+API_VERSION = "20240831"
 CATALOG_NAME = "aidp_lab"
 DEVELOPER_ROLE_NAME = "AIDP_LAB_DEVELOPER"
 PENDING_ROLE_NAME = "AIDP_LAB_PENDING"
@@ -28,6 +28,7 @@ SHARED_COMPUTE_NAME = "aidp_lab_shared_compute"
 BOOTSTRAP_OBJECT_NAME = ".bootstrap/operator-credentials.json"
 BOOTSTRAP_READY = "AIDP_LAB_CREDENTIALS_READY"
 LAYERS = ("landing", "bronze", "silver", "gold")
+SHARED_SCHEMA_NAMES = {layer: f"oci_{layer}" for layer in LAYERS}
 RESOURCE_WAIT_ATTEMPTS = 120
 POST_APPLY_BUDGET_SECONDS = 3300
 _post_apply_deadline = 0.0
@@ -81,7 +82,10 @@ class ApiResponse:
 
 class AidpApi:
     def __init__(self, region: str, platform_id: str, signer: Any, deployment_id: str) -> None:
-        self.base = f"https://aidpprod.{region}.oci.oraclecloud.com/{API_VERSION}/aiDataPlatforms/{platform_id}"
+        self.base = (
+            f"https://datalake.{region}.oci.oraclecloud.com/{API_VERSION}/"
+            f"dataLakes/{platform_id}"
+        )
         self.signer = signer
         self.deployment_id = deployment_id
         self.session = requests.Session()
@@ -300,19 +304,47 @@ def assert_operator_platform_admin(
     api: AidpApi,
     operator_user_ocid: str,
     *,
-    attempts: int = 60,
+    attempts: int = RESOURCE_WAIT_ATTEMPTS,
 ) -> None:
+    last_not_ready: ApiRequestError | None = None
     for attempt in range(attempts):
-        role = exact_one(
-            api.list_all("/roles", params={"displayName": "AI_DATA_PLATFORM_ADMIN"}),
-            "AI_DATA_PLATFORM_ADMIN",
-            "role",
-        )
+        try:
+            role = exact_one(
+                api.list_all("/roles", params={"displayName": "AI_DATA_PLATFORM_ADMIN"}),
+                "AI_DATA_PLATFORM_ADMIN",
+                "role",
+            )
+            last_not_ready = None
+        except ApiRequestError as exc:
+            if exc.status_code != 404:
+                raise
+            # ponytail: ACTIVE can precede Workbench RBAC visibility; this bounded wait
+            # still remains under the hook's process-wide safety deadline.
+            last_not_ready = exc
+            role = None
         if role and role_has_member(api, str(role.get("key") or ""), "USER", operator_user_ocid):
             return
         if attempt + 1 < attempts:
             _sleep(5)
+    if last_not_ready:
+        raise ReconcileError(
+            "AIDP Workbench did not authorize the deployment operator after the "
+            f"readiness window; last request: {last_not_ready}"
+        ) from last_not_ready
     raise ReconcileError("OCI deployment operator is not an AI_DATA_PLATFORM_ADMIN member")
+
+
+def _admin_permission_is_assigned(
+    matches: list[dict[str, Any]], role_name: str
+) -> bool:
+    observed = set().union(
+        *(set(item.get("granteePermissions") or []) for item in matches)
+    )
+    if not observed.issubset({"READ", "SELECT", "USE", "ADMIN"}):
+        raise ReconcileError(
+            f"Role {role_name} has a conflicting direct permission; remove the broader grant before retrying"
+        )
+    return "ADMIN" in observed
 
 
 def permission_is_assigned(
@@ -330,6 +362,8 @@ def permission_is_assigned(
             continue
         matches.append(item)
     expected_permissions = {permission}
+    if permission == "ADMIN":
+        return _admin_permission_is_assigned(matches, role_name)
     if any(
         set(item.get("granteePermissions") or []) != expected_permissions
         or (inheritable is not None and item.get("isPermissionsInheritable") is not inheritable)
@@ -495,10 +529,20 @@ def workspace_object_key(response: ApiResponse | None, path: str) -> str:
     if response is None:
         return ""
     body = response.body if isinstance(response.body, dict) else {}
-    key = response.headers.get("object-key") or body.get("key") or body.get("objectKey")
-    if not key:
+    headers = {str(name).casefold(): value for name, value in response.headers.items()}
+    key = headers.get("object-key") or body.get("key") or body.get("objectKey")
+    if key:
+        return str(key)
+    object_path = (
+        headers.get("folder")
+        or headers.get("path")
+        or body.get("path")
+    )
+    if object_path and str(object_path) != path:
+        raise ReconcileError(f"AIDP workspace object {path} returned a mismatched path")
+    if not object_path:
         raise ReconcileError(f"AIDP workspace object {path} has no object key")
-    return str(key)
+    return str(object_path)
 
 
 def ensure_workspace_folder(api: AidpApi, workspace_key: str, path: str) -> tuple[str, bool]:
@@ -600,7 +644,17 @@ def assert_fresh_catalog(
         raise ReconcileError(
             f"Fresh-only bootstrap found legacy global schemas: {names}; remove them explicitly before retrying"
         )
-    volumes = api.list_all("/volumes", params={"catalogKey": catalog_key})
+    volumes: list[dict[str, Any]] = []
+    for schema in schemas:
+        schema_key = str(schema.get("key") or "")
+        if not schema_key:
+            raise ReconcileError("AIDP schema has no key while checking legacy external volumes")
+        volumes.extend(
+            api.list_all(
+                "/volumes",
+                params={"catalogKey": catalog_key, "schemaKey": schema_key},
+            )
+        )
     external: list[dict[str, Any]] = []
     for volume in volumes:
         details = volume
@@ -757,7 +811,26 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
     global_schema_count, external_volume_count = assert_fresh_catalog(
         api, catalog_key, namespace, bucket
     )
-    events.append("Fresh-only catalog verified: zero global schemas and zero external volumes")
+    events.append("Fresh-only catalog verified: zero legacy schemas and zero external volumes")
+    shared_schemas: dict[str, dict[str, Any]] = {}
+    for layer, schema_name in SHARED_SCHEMA_NAMES.items():
+        shared_schemas[layer], schema_created = ensure_resource(
+            api,
+            "/schemas",
+            "shared schema",
+            schema_name,
+            {
+                "displayName": schema_name,
+                "description": f"Shared collaborative {layer.title()} schema for the AIDP lab",
+                "catalogName": CATALOG_NAME,
+            },
+            {},
+            filters={"catalogKey": catalog_key},
+            wait_for_active=True,
+        )
+        events.append(
+            f"Shared schema {schema_name} {'created' if schema_created else 'reused'}"
+        )
     workspace_key = str(workspace["key"])
     shared_compute, compute_created = ensure_resource(
         api,
@@ -793,10 +866,10 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
     events.append(f"Shared compute {SHARED_COMPUTE_NAME} {'created' if compute_created else 'reused'}")
     compute_key = str(shared_compute["key"])
     root_object_key, root_created = ensure_workspace_folder(
-        api, workspace_key, "/Workspace/lab-users"
+        api, workspace_key, "/Workspace/medallon"
     )
     events.append(
-        f"Workspace root /Workspace/lab-users {'created' if root_created else 'reused'}"
+        f"Workspace root /Workspace/medallon {'created' if root_created else 'reused'}"
     )
 
     role_specs = (
@@ -844,14 +917,34 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
         DEVELOPER_ROLE_NAME,
         "USE",
     )
+    for schema in shared_schemas.values():
+        ensure_role_permission(
+            api,
+            f"/schemas/{schema['key']}",
+            "assignSchemaPermissionDetails",
+            DEVELOPER_ROLE_NAME,
+            "ADMIN",
+        )
     expected_permissions = {
         DEVELOPER_ROLE_NAME: {
-            ("WORKSPACE", workspace_key, frozenset({"USER"})),
-            ("CATALOG", catalog_key, frozenset({"SELECT"})),
-            ("CLUSTER", compute_key, frozenset({"USE"})),
+            ("WORKSPACE", str(workspace["displayName"]), frozenset({"USER"})),
+            ("CATALOG", CATALOG_NAME, frozenset({"SELECT"})),
+            (
+                "CLUSTER",
+                f"{workspace['displayName']}/{SHARED_COMPUTE_NAME}",
+                frozenset({"USE"}),
+            ),
+            *{
+                (
+                    "SCHEMA",
+                    f"{CATALOG_NAME}.{schema_name}",
+                    frozenset({"ADMIN"}),
+                )
+                for schema_name in SHARED_SCHEMA_NAMES.values()
+            },
         },
         PENDING_ROLE_NAME: {
-            ("WORKSPACE", workspace_key, frozenset({"USER"})),
+            ("WORKSPACE", str(workspace["displayName"]), frozenset({"USER"})),
         },
     }
     for role_name, _, group_ocid in role_specs:
@@ -870,6 +963,9 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
             "shared_compute_name": SHARED_COMPUTE_NAME,
             "catalog_key": catalog_key,
             "catalog_name": CATALOG_NAME,
+            "shared_schema_keys": {
+                layer: str(schema["key"]) for layer, schema in shared_schemas.items()
+            },
             "role_keys": role_keys,
             "root_object_key": root_object_key,
             "global_schema_count": global_schema_count,
@@ -880,7 +976,14 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
 
 
 def workbench_url(outputs: dict[str, Any]) -> str:
-    endpoint = str(outputs.get("aidp_web_socket_endpoint") or "").strip()
+    direct_url = str(outputs.get("aidp_workbench_url") or "").strip()
+    if direct_url.startswith("https://") and ".datalake.oci.oraclecloud.com" in direct_url:
+        return direct_url
+    endpoint = str(
+        outputs.get("aidp_web_socket_endpoint")
+        or outputs.get("aidp_alias_endpoint")
+        or ""
+    ).strip()
     tenancy = str(outputs.get("tenancy_name") or "").strip()
     domain = str(outputs.get("identity_domain_name") or "Default").strip()
     if not endpoint or not tenancy:
@@ -891,6 +994,24 @@ def workbench_url(outputs: dict[str, Any]) -> str:
     if not host.endswith(".datalake.oci.oraclecloud.com"):
         host = f"{host}.datalake.oci.oraclecloud.com"
     return f"https://{host}#?tenant={tenancy}&domain={domain}"
+
+
+def aidp_alias_endpoint(alias_key: str, region: str) -> str:
+    if not alias_key:
+        return ""
+    import oci
+
+    region_key = next(
+        (
+            short_name
+            for short_name, region_name in oci.regions.REGIONS_SHORT_NAMES.items()
+            if region_name == region
+        ),
+        "",
+    )
+    if not region_key:
+        raise ReconcileError(f"OCI SDK has no short region key for {region}")
+    return alias_key if alias_key.endswith(region_key) else f"{alias_key}{region_key}"
 
 
 def wait_for_application(application_url: str, *, attempts: int = 60) -> None:
@@ -919,7 +1040,14 @@ def resolve_workbench_url(outputs: dict[str, Any], config: dict[str, Any], signe
         platform = oci.ai_data_platform.AiDataPlatformClient(config, signer=signer).get_ai_data_platform(
             str(outputs["ai_data_platform_id"])
         ).data
-        enriched_outputs = {**outputs, "aidp_web_socket_endpoint": getattr(platform, "web_socket_endpoint", "")}
+        enriched_outputs = {
+            **outputs,
+            "aidp_web_socket_endpoint": getattr(platform, "web_socket_endpoint", ""),
+            "aidp_alias_endpoint": aidp_alias_endpoint(
+                str(getattr(platform, "alias_key", "") or ""),
+                str(config["region"]),
+            ),
+        }
         return workbench_url(enriched_outputs)
     except Exception:
         # ponytail: an endpoint can appear after the Workbench is active; Settings remains the admin fallback.

@@ -30,7 +30,7 @@ The frontend in [`apps/frontend/src/App.tsx`](../apps/frontend/src/App.tsx) rend
 - segmented input for the registration code
 - phase-aware registration with bounded 2/4/8/16/30-second retries and a ten-minute deadline
 - login/logout flows
-- the admin user table, search, create, and delete actions
+- the admin user table, industry inventory, search, create, AIDP reset, and delete actions
 - modal confirmations and basic accessibility behavior such as focus trapping
 
 ### OCI infrastructure
@@ -41,15 +41,17 @@ The Terraform package under [`terraform/`](../terraform/) is what turns the app 
 - a registration VM whose bootstrap logic is generated from `templatefile/user_data.sh`
 - post-apply reconciliation for the workspace, catalog, shared compute, root folder, roles, group membership, permissions, and one-use operator-profile delivery
 
-### Participant isolation and RBAC
-Folders and schemas use a deterministic opaque participant key, never an email address. Each participant receives `/Workspace/lab-users/<key>/<industry>`, four personal schemas, four notebooks, and one personal job. Data uses OCI URIs in the single `aidp-data-<suffix>` bucket; there are no external AIDP volumes and no explicit OSCS/OpenSearch resource.
+### Participant collaboration and RBAC
+Each participant receives `/Workspace/medallon/<normalized-email>/<industry>`, four notebooks, and one personal job. All participants collaborate through `oci_landing`, `oci_bronze`, `oci_silver`, and `oci_gold`; tables, jobs, and bucket paths retain a deterministic opaque participant key to avoid collisions. Data uses OCI URIs in the single `aidp-data-<suffix>` bucket; there are no external AIDP volumes and no explicit OSCS/OpenSearch resource.
 
-Provisioning state is held under `/Workspace/lab-users/.control/<key>.json`, where only the platform-administrator operator has inherited administration. The manifest inside the participant folder is descriptive and deliberately not trusted for industry immutability, drift repair, or cleanup.
+Provisioning state is held under `/Workspace/medallon/.control/<key>.json`, where only the platform-administrator operator has inherited administration. It records the exact participant path and active industry. The same protected manifest journals administrator resets through cleanup, provisioning, and completion so a lost response cannot repeat destructive work. The manifest inside the participant folder is descriptive and deliberately not trusted for drift repair or cleanup.
 
 - Pending: workspace `USER` only and no OCI IAM grant to operate AIDP.
-- Developer group: workspace `USER`, catalog `SELECT`, shared compute `USE`.
+- Developer group: workspace `USER`, catalog `SELECT`, shared compute `USE`, shared schemas `ADMIN`.
 - Deployment operator: verified direct member of the built-in `AI_DATA_PLATFORM_ADMIN` role inherited from platform creation; no custom `AIDP_LAB_PROVISIONER` role.
-- Participant: root `READ` without cascade, own folder `ADMIN` with cascade, own job `MANAGE`, four personal schemas `ADMIN`.
+- Participant: root `READ` without cascade, own folder `ADMIN` with cascade, own job `MANAGE`.
+
+This collaborative sandbox intentionally lets developers alter tables in the shared schemas, and participant emails are visible in the workspace tree. Table names and Object Storage prefixes remain opaque-key scoped so simultaneous runs do not overwrite another participant's data.
 
 Developer IAM can `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket. The operator retains its existing administrative identity, and pending participants have no AIDP IAM grant.
 

@@ -4,6 +4,7 @@ import test from "node:test";
 
 const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 const pollingSource = await readFile(new URL("../src/registrationPoll.ts", import.meta.url), "utf8");
+const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
 test("secrets are never persisted in browser storage", () => {
@@ -15,7 +16,7 @@ test("registration has no password field while administrator login remains prote
   assert.match(source, /Registration code/);
   assert.match(source, /function AdminLogin/);
   assert.match(source, /Industry/);
-  assert.match(source, /value="banking"/);
+  assert.match(source, /value: "banking"/);
   assert.doesNotMatch(source, /Generate password/);
 });
 
@@ -65,6 +66,22 @@ test("administrator UI manages lab users through protected API routes", () => {
   assert.match(source, /className="confirm-error"/);
 });
 
+test("administrator can reset only a participant AIDP environment", () => {
+  assert.match(source, /<th>Industry<\/th>/);
+  assert.match(source, /industryLabel\(user\.industry\)/);
+  assert.match(source, /Reset AIDP environment for \$\{user\.email\}/);
+  assert.match(source, /\/api\/admin\/users\/\$\{encodeURIComponent\(target\.id\)\}\/reset/);
+  assert.match(source, /const operationId = crypto\.randomUUID\(\)/);
+  assert.match(source, /operation_id: operationId/);
+  assert.match(source, /The OCI Identity account is preserved/);
+  assert.match(source, /open=\{Boolean\(pendingReset\) && !resetting\}/);
+  assert.match(source, /aria-busy=\{resetting\} inert=\{resetting\}/);
+  assert.match(source, /resetAbortRef\.current\?\.abort\(\)/);
+  assert.match(source, /select:not\(\[disabled\]\)/);
+  assert.match(source, /function ProvisioningOverlay/);
+  assert.match(styles, /\.table-action \{[^}]*width: 44px;[^}]*min-height: 44px;/);
+});
+
 test("registration retries OCI reconciliation with phases, backoff, and a real deadline", () => {
   assert.match(pollingSource, /"identity"[\s\S]*"workspace"[\s\S]*"schemas"[\s\S]*"content"[\s\S]*"permissions"/);
   assert.match(pollingSource, /2_000, 4_000, 8_000, 16_000, 30_000/);
@@ -73,7 +90,13 @@ test("registration retries OCI reconciliation with phases, backoff, and a real d
   assert.match(source, /pollRegistration\(\{/);
   assert.match(source, /registrationAbortRef\.current\?\.abort\(\)/);
   assert.match(source, /phase: pending\.phase/);
-  assert.match(source, /<p>\{state\.message\}<\/p>/);
+  assert.match(source, /Loading\.\.\./);
+  assert.doesNotMatch(source, /Preparing your lab/);
+  assert.doesNotMatch(source, /Aligning governed schemas/);
+  assert.match(source, /role="progressbar"/);
+  assert.match(source, /aria-valuetext=/);
+  assert.match(source, /Step \{progress\.step\} of \{progress\.total\}/);
+  assert.match(source, /registration-progress-detail/);
   assert.match(source, /Open AI Data Platform/);
   assert.match(source, /function AccessReadyIcon/);
   assert.match(source, /aria-labelledby="registration-ready-title"/);

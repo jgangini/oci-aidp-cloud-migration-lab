@@ -20,6 +20,7 @@ After login, the admin area provides:
 - a session-gated dashboard
 - search across lab users
 - a create-user form
+- an Industry column and an AIDP reset action with a replacement-industry selector
 - a delete confirmation flow
 - links to the AIDP console when available
 - sign-out and session-management actions
@@ -31,6 +32,7 @@ The browser tests in [`apps/frontend/tests/security.test.mjs`](../apps/frontend/
 - `createPortal` is used for confirmation dialogs so the modal overlays the entire app.
 - The app uses `credentials: "include"` on API calls because the backend session is cookie-based.
 - The admin table distinguishes active, pending, inactive, and managed users so operators can see which identities belong to the lab.
+- Reset confirmation warns which AIDP data is removed, preserves OCI Identity, reports phase progress, and announces completion through the shared toast.
 - The styling file contains most of the layout and interaction behavior, so changing markup often requires a paired CSS update.
 
 ## Accessibility and security notes

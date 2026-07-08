@@ -18,6 +18,11 @@ output "aidp_web_socket_endpoint" {
   value       = local.aidp_web_socket_endpoint
 }
 
+output "aidp_alias_key" {
+  description = "AIDP alias used when OCI does not publish a WebSocket endpoint."
+  value       = local.aidp_alias_key
+}
+
 output "tenancy_name" {
   value = data.oci_identity_tenancy.current.name
 }

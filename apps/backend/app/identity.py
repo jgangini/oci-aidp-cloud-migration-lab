@@ -318,6 +318,7 @@ class IdentityClient:
             users.append(
                 {
                     "id": user_id,
+                    "ocid": user.get("ocid", ""),
                     "name": user.get("displayName") or user.get("name", {}).get("formatted") or "",
                     "email": user.get("userName", ""),
                     "status": status,

@@ -7,6 +7,27 @@ export type RegistrationPhase =
 
 export type RegistrationPhaseValue = RegistrationPhase | (string & {});
 
+export const registrationPhases: readonly RegistrationPhase[] = [
+  "identity",
+  "workspace",
+  "schemas",
+  "content",
+  "permissions",
+];
+
+export function registrationProgress(phase?: RegistrationPhaseValue) {
+  const index = phase
+    ? registrationPhases.indexOf(phase as RegistrationPhase)
+    : -1;
+  const step = index >= 0 ? index + 1 : 1;
+  const total = registrationPhases.length;
+  return {
+    step,
+    total,
+    percent: Math.round(((step - 1) / total) * 100),
+  };
+}
+
 export type RegistrationResponse = {
   status: "pending" | "active" | (string & {});
   phase?: RegistrationPhaseValue;

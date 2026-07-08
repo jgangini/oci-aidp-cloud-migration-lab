@@ -25,6 +25,7 @@ Administrator access is protected by the `__Host-aidp_lab_admin` cookie and the 
 - `GET /api/admin/settings` — exposes the AIDP console URL for the UI
 - `GET /api/admin/users` — lists lab users
 - `POST /api/admin/users` — creates a lab user from the admin UI
+- `POST /api/admin/users/{user_id}/reset` — idempotently removes and reinstalls only the participant's AIDP environment, optionally changing industry while preserving OCI Identity
 - `DELETE /api/admin/users/{user_id}` — removes a lab-created user after validating ownership
 
 ## Identity flow
@@ -37,14 +38,14 @@ Administrator access is protected by the `__Host-aidp_lab_admin` cookie and the 
 6. promotes the user to developers and removes pending only after provisioning succeeds
 7. deletes only users created by the lab
 
-The client treats Identity and AIDP reconciliation as eventually consistent. `POST /api/register` is idempotent and may return `202 pending` while identity, workspace, schemas, content, or permissions are being reconciled. The industry recorded for an existing participant is immutable; a conflicting selection returns `409` with instructions to delete and recreate that participant.
+The client treats Identity and AIDP reconciliation as eventually consistent. `POST /api/register` is idempotent and may return `202 pending` while identity, workspace, schemas, content, or permissions are being reconciled. The public registration industry remains immutable. The administrator reset endpoint accepts a UUID operation ID, journals `cleanup -> provision -> complete`, and permits changing industry without deleting the managed Identity Domains user. Retrying the same operation resumes it; a different operation conflicts while one is active.
 
 ## AIDP participant flow
-The Identity Domains and AIDP clients authenticate with the same operator profile at `OCI_CONFIG_FILE`; neither falls back to OAuth or an instance principal. The encrypted one-use bootstrap happens before request handling, so the application only reads the validated root-only runtime profile. An opaque participant key—not an email address—names `/Workspace/lab-users/<key>/<industry>`, the personal job, and four schemas. The operator-backed service creates four deterministic source CSVs and four notebooks, then aligns permissions before Identity promotion.
+The Identity Domains and AIDP clients authenticate with the same operator profile at `OCI_CONFIG_FILE`; neither falls back to OAuth or an instance principal. The encrypted one-use bootstrap happens before request handling, so the application only reads the validated root-only runtime profile. The normalized email names `/Workspace/medallon/<email>/<industry>`, while an opaque participant key scopes the personal job, table names, and Object Storage paths. The operator-backed service creates four deterministic source CSVs and four notebooks, then aligns permissions before Identity promotion.
 
-The authoritative participant state is `/Workspace/lab-users/.control/<key>.json`, an operator-admin-only sibling of the personal folders. User-editable manifests and bucket objects are never trusted to choose an industry, decide whether content may be overwritten, or scope deletion.
+The authoritative participant state is `/Workspace/medallon/.control/<key>.json`, an operator-admin-only sibling of the personal folders. It stores the exact workspace path, active industry, and reset journal; user-editable manifests and bucket objects never scope deletion.
 
-RBAC is exact: pending has workspace `USER`; developers have workspace `USER`, catalog `SELECT`, and shared compute `USE`; the deployment operator is verified as a direct member of built-in `AI_DATA_PLATFORM_ADMIN`; the participant has root `READ` without cascade, own-folder `ADMIN` with cascade, own-job `MANAGE`, and schema `ADMIN` on all four personal schemas. The lab creates no `AIDP_LAB_PROVISIONER` role.
+RBAC is exact: pending has workspace `USER`; developers have workspace `USER`, catalog `SELECT`, shared compute `USE`, and `ADMIN` on the four collaborative schemas; the deployment operator is verified as a direct member of built-in `AI_DATA_PLATFORM_ADMIN`; each participant has root `READ` without cascade, own-folder `ADMIN` with cascade, and own-job `MANAGE`. The lab creates no `AIDP_LAB_PROVISIONER` role.
 
 ## Security rules to keep intact
 - Registration code and admin password are verified through PBKDF2 hashes, not plaintext values.

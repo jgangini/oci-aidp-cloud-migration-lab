@@ -32,7 +32,7 @@ class FakeIdentity:
             raise IdentityPending("activation pending")
 
     async def list_lab_users(self) -> list[dict]:
-        return [{"id": "user-id", "name": "Ada", "email": "ada@example.com", "status": "active", "active": True, "managed": True}]
+        return [{"id": "user-id", "ocid": "ocid1.user.oc1..ada", "name": "Ada", "email": "ada@example.com", "status": "active", "active": True, "managed": True}]
 
     async def delete_lab_user(self, user_id: str) -> bool:
         if self.mode == "foreign-delete":
@@ -65,7 +65,7 @@ class FakeAidp:
             email,
             industry,
             "u_0123456789abcdef",
-            f"/Workspace/lab-users/u_0123456789abcdef/{industry}",
+            f"/Workspace/medallon/{email}/{industry}",
             f"wf_u_0123456789abcdef_{industry}_medallion",
         )
 
@@ -73,6 +73,22 @@ class FakeAidp:
         if self.mode == "cleanup-pending":
             raise AidpProvisionPending("cleanup in progress")
         self.cleaned.append(user_ocid)
+
+    async def reset_user(
+        self,
+        user_ocid: str,
+        email: str,
+        industry: str,
+        operation_id: str,
+    ) -> UserMaterial:
+        if self.mode == "reset-pending":
+            raise AidpProvisionPending("participant cleanup is still running", "cleanup")
+        if self.mode == "reset-conflict":
+            raise AidpProvisionConflict("another reset is already in progress")
+        return await self.provision_user(user_ocid, email, industry)
+
+    async def list_user_industries(self, user_ocids: list[str]) -> dict[str, str]:
+        return {user_ocid: "banking" for user_ocid in user_ocids}
 
     async def healthcheck(self) -> None:
         if self.mode == "health-fail-aidp":
@@ -180,6 +196,30 @@ def test_health_requires_usable_signed_identity_operation(tmp_path: Path) -> Non
     assert unhealthy.json() == {"detail": "Lab control services are unavailable"}
     assert aidp_unhealthy.status_code == 503
     assert aidp_unhealthy.json() == {"detail": "Lab control services are unavailable"}
+
+
+def test_health_reuses_the_deep_probe_inside_its_ttl(tmp_path: Path) -> None:
+    class CountingIdentity(FakeIdentity):
+        calls = 0
+
+        async def healthcheck(self) -> None:
+            self.calls += 1
+
+    class CountingAidp(FakeAidp):
+        calls = 0
+
+        async def healthcheck(self) -> None:
+            self.calls += 1
+
+    identity = CountingIdentity()
+    aidp = CountingAidp()
+    client = make_client(tmp_path)
+    client.app.state.identity_factory = lambda: identity
+    client.app.state.aidp_factory = lambda: aidp
+
+    assert [client.get("/api/health").status_code for _ in range(3)] == [200, 200, 200]
+    assert identity.calls == 1
+    assert aidp.calls == 1
 
 
 def test_scim_filter_metacharacters_are_rejected_in_email(tmp_path: Path) -> None:
@@ -331,6 +371,8 @@ def test_admin_cookie_and_live_users(tmp_path: Path) -> None:
     assert LOCAL_COOKIE_NAME in client.cookies
     assert users.status_code == 200
     assert users.json()["users"][0]["status"] == "active"
+    assert users.json()["users"][0]["industry"] == "banking"
+    assert "ocid" not in users.json()["users"][0]
     assert settings.status_code == 200
     assert settings.json()["aidp_url"].startswith("https://example.datalake.oci.oraclecloud.com")
 
@@ -379,6 +421,78 @@ def test_admin_delete_keeps_identity_user_when_aidp_cleanup_is_pending(tmp_path:
     assert "AIDP cleanup is still in progress" in response.json()["detail"]
 
 
+def test_admin_reset_rebuilds_aidp_without_deleting_identity_and_activates_pending_user(tmp_path: Path) -> None:
+    class TrackingIdentity(FakeIdentity):
+        def __init__(self) -> None:
+            super().__init__()
+            self.activated: list[str] = []
+            self.deleted = False
+
+        async def prepare_registration(self, name: str, email: str) -> RegistrationResult:
+            raise AssertionError("reset must not restart Identity registration")
+
+        async def activate_registration(self, user_id: str) -> None:
+            self.activated.append(user_id)
+
+        async def delete_lab_user(self, user_id: str) -> bool:
+            self.deleted = True
+            return True
+
+    class TrackingAidp(FakeAidp):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resets: list[tuple[str, str, str, str]] = []
+
+        async def reset_user(self, user_ocid, email, industry, operation_id):
+            self.resets.append((user_ocid, email, industry, operation_id))
+            return await super().reset_user(user_ocid, email, industry, operation_id)
+
+    identity = TrackingIdentity()
+    aidp = TrackingAidp()
+    client = make_client(tmp_path)
+    client.app.state.identity_factory = lambda: identity
+    client.app.state.aidp_factory = lambda: aidp
+    client.post("/api/admin/login", json={"username": "lab-admin", "password": "long-admin-password"})
+    operation_id = "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43"
+
+    response = client.post(
+        "/api/admin/users/user-id/reset",
+        json={"industry": "retail", "operation_id": operation_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "active"
+    assert response.json()["industry"] == "retail"
+    assert response.json()["operation_id"] == operation_id
+    assert aidp.resets == [("ocid1.user.oc1..ada", "ada@example.com", "retail", operation_id)]
+    assert identity.activated == ["user-id"]
+    assert not identity.deleted
+
+
+def test_admin_reset_returns_cleanup_progress_and_validates_operation_id(tmp_path: Path) -> None:
+    client = make_client(tmp_path, "reset-pending")
+    client.post("/api/admin/login", json={"username": "lab-admin", "password": "long-admin-password"})
+    operation_id = "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43"
+
+    pending = client.post(
+        "/api/admin/users/user-id/reset",
+        json={"industry": "healthcare", "operation_id": operation_id},
+    )
+    invalid = client.post(
+        "/api/admin/users/user-id/reset",
+        json={"industry": "healthcare", "operation_id": "not-a-uuid"},
+    )
+
+    assert pending.status_code == 202
+    assert pending.json() == {
+        "status": "pending",
+        "phase": "cleanup",
+        "operation_id": operation_id,
+        "message": "participant cleanup is still running",
+    }
+    assert invalid.status_code == 422
+
+
 def test_local_development_mode_runs_user_lifecycle_without_oci(tmp_path: Path) -> None:
     settings = Settings(
         admin_username="local-admin",
@@ -394,7 +508,18 @@ def test_local_development_mode_runs_user_lifecycle_without_oci(tmp_path: Path) 
         assert client.post("/api/admin/login", json={"username": "local-admin", "password": "local-admin-password"}).status_code == 204
         created = client.post("/api/admin/users", json={"name": "Ada Lovelace", "email": "ada@example.com", "industry": "healthcare"})
         assert created.status_code == 201
-        user_id = client.get("/api/admin/users").json()["users"][0]["id"]
+        listed = client.get("/api/admin/users").json()["users"]
+        assert listed[0]["industry"] == "healthcare"
+        user_id = listed[0]["id"]
+        reset = client.post(
+            f"/api/admin/users/{user_id}/reset",
+            json={
+                "industry": "retail",
+                "operation_id": "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43",
+            },
+        )
+        assert reset.status_code == 200
+        assert client.get("/api/admin/users").json()["users"][0]["industry"] == "retail"
         assert client.delete(f"/api/admin/users/{user_id}").status_code == 204
         assert client.get("/api/admin/users").json()["users"] == []
 

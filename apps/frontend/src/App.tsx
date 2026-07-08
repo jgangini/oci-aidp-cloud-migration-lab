@@ -1,6 +1,7 @@
 import {
   FormEvent,
   KeyboardEvent,
+  ReactNode,
   RefObject,
   useEffect,
   useId,
@@ -13,6 +14,7 @@ import {
   ApiRequestError,
   parseRetryAfter,
   pollRegistration,
+  registrationProgress,
   type RegistrationPhase,
   type RegistrationPhaseValue,
   type RegistrationResponse,
@@ -24,18 +26,33 @@ type LabUser = {
   name: string;
   email: string;
   status: "active" | "pending";
+  industry?: string | null;
   active: boolean;
   managed?: boolean;
 };
 
+const industryOptions = [
+  { value: "banking", label: "Banking" },
+  { value: "telecommunications", label: "Telecommunications" },
+  { value: "retail", label: "Retail" },
+  { value: "healthcare", label: "Healthcare" },
+] as const;
+
+function industryLabel(industry?: string | null) {
+  return (
+    industryOptions.find(({ value }) => value === industry)?.label ?? "Not set"
+  );
+}
+
 const registrationPhaseLabels: Record<RegistrationPhase, string> = {
-  identity: "Creating your Identity account",
-  workspace: "Preparing your workspace",
-  schemas: "Aligning governed schemas",
-  content: "Loading your lab content",
-  permissions: "Granting your permissions",
+  identity: "Identity account",
+  workspace: "Workspace",
+  schemas: "Shared schemas",
+  content: "Lab content",
+  permissions: "Permissions",
 };
 function registrationPhaseLabel(phase?: RegistrationPhaseValue) {
+  if (phase === "cleanup") return "Cleaning AIDP environment";
   return phase && Object.hasOwn(registrationPhaseLabels, phase)
     ? registrationPhaseLabels[phase as RegistrationPhase]
     : "Reconciling OCI access";
@@ -45,6 +62,7 @@ const focusableSelector = [
   "a[href]",
   "button:not([disabled])",
   "input:not([disabled])",
+  "select:not([disabled])",
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
@@ -105,15 +123,17 @@ function ConfirmModal({
   kind,
   title,
   description,
+  children,
   error,
   confirmLabel,
   onClose,
   onConfirm,
 }: {
   open: boolean;
-  kind: "question" | "delete";
+  kind: "question" | "delete" | "reset";
   title: string;
   description: string;
+  children?: ReactNode;
   error?: string;
   confirmLabel: string;
   onClose: () => void;
@@ -129,6 +149,8 @@ function ConfirmModal({
   const icon =
     kind === "delete" ? (
       <TrashIcon />
+    ) : kind === "reset" ? (
+      <RefreshIcon />
     ) : (
       <svg
         viewBox="0 0 24 24"
@@ -159,6 +181,7 @@ function ConfirmModal({
           <div className="confirm-icon">{icon}</div>
           <h2 id={titleId}>{title}</h2>
           <p id={descriptionId}>{description}</p>
+          {children}
           {error && (
             <p className="confirm-error" role="alert">
               {error}
@@ -206,6 +229,51 @@ function Toast({
       </button>
     </div>,
     document.body,
+  );
+}
+
+function ProvisioningOverlay({
+  phase,
+  message,
+}: {
+  phase?: RegistrationPhaseValue;
+  message?: string;
+}) {
+  const phaseId = useId();
+  const progress = registrationProgress(phase);
+  return (
+    <section
+      className="registration-overlay"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div className="registration-result">
+        <span className="progress-orbit" aria-hidden="true" />
+        <p className="registration-loading-title">Loading...</p>
+        <p className="registration-progress-phase" id={phaseId}>
+          {registrationPhaseLabel(phase)}
+        </p>
+        <div
+          className="registration-progress-track"
+          role="progressbar"
+          aria-labelledby={phaseId}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress.percent}
+          aria-valuetext={`${progress.percent}% completed, step ${progress.step} of ${progress.total}: ${registrationPhaseLabel(phase)}`}
+        >
+          <span style={{ width: `${progress.percent}%` }} />
+        </div>
+        <div className="registration-progress-meta">
+          <strong>{progress.percent}% completed</strong>
+          <span>
+            Step {progress.step} of {progress.total}
+          </span>
+        </div>
+        <p className="registration-progress-detail">{message}</p>
+      </div>
+    </section>
   );
 }
 
@@ -677,10 +745,11 @@ function RegisterPage() {
               onChange={(event) => update("industry", event.target.value)}
               required
             >
-              <option value="banking">Banking</option>
-              <option value="telecommunications">Telecommunications</option>
-              <option value="retail">Retail</option>
-              <option value="healthcare">Healthcare</option>
+              {industryOptions.map((industry) => (
+                <option key={industry.value} value={industry.value}>
+                  {industry.label}
+                </option>
+              ))}
             </select>
           </label>
           <fieldset className="registration-code">
@@ -736,18 +805,7 @@ function RegisterPage() {
         </form>
       </section>
       {state.status === "processing" && (
-        <section
-          className="registration-overlay"
-          role="status"
-          aria-live="polite"
-        >
-          <div className="registration-result">
-            <span className="progress-orbit" aria-hidden="true" />
-            <p className="eyebrow">{registrationPhaseLabel(state.phase)}</p>
-            <h2>Preparing your lab</h2>
-            <p>{state.message}</p>
-          </div>
-        </section>
+        <ProvisioningOverlay phase={state.phase} message={state.message} />
       )}
       {state.status === "ready" && (
         <section className="registration-overlay">
@@ -868,6 +926,13 @@ function AdminUsers() {
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: "", email: "", industry: "banking" });
   const createAbortRef = useRef<AbortController | null>(null);
+  const resetAbortRef = useRef<AbortController | null>(null);
+  const [pendingReset, setPendingReset] = useState<LabUser | null>(null);
+  const [resetIndustry, setResetIndustry] = useState("banking");
+  const [resetting, setResetting] = useState(false);
+  const [resetProgress, setResetProgress] =
+    useState<RegistrationResponse | null>(null);
+  const [resetError, setResetError] = useState("");
   const [pendingDelete, setPendingDelete] = useState<LabUser | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [logoutOpen, setLogoutOpen] = useState(false);
@@ -886,7 +951,10 @@ function AdminUsers() {
   }
   useEffect(() => {
     void loadUsers();
-    return () => createAbortRef.current?.abort();
+    return () => {
+      createAbortRef.current?.abort();
+      resetAbortRef.current?.abort();
+    };
   }, []);
   const visible = users.filter((user) =>
     `${user.name} ${user.email}`.toLowerCase().includes(query.toLowerCase()),
@@ -955,10 +1023,61 @@ function AdminUsers() {
       );
     }
   }
+  async function resetUser() {
+    if (!pendingReset) return;
+    const target = pendingReset;
+    const operationId = crypto.randomUUID();
+    const controller = new AbortController();
+    resetAbortRef.current?.abort();
+    resetAbortRef.current = controller;
+    setResetting(true);
+    setResetError("");
+    setMessage("");
+    setResetProgress({
+      status: "pending",
+      phase: "cleanup",
+      message: "Removing the participant's current AIDP resources.",
+    });
+    try {
+      const result = await pollRegistration({
+        signal: controller.signal,
+        request: (signal) =>
+          api<RegistrationResponse>(
+            `/api/admin/users/${encodeURIComponent(target.id)}/reset`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                industry: resetIndustry,
+                operation_id: operationId,
+              }),
+              signal,
+            },
+          ),
+        onPending: setResetProgress,
+      });
+      setPendingReset(null);
+      setMessage(
+        result.message ||
+          `${target.email}'s AIDP environment was reset for ${industryLabel(resetIndustry)}.`,
+      );
+      await loadUsers();
+    } catch (reason) {
+      if (controller.signal.aborted) return;
+      setResetError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to reset the AIDP environment.",
+      );
+    } finally {
+      if (resetAbortRef.current === controller) resetAbortRef.current = null;
+      setResetProgress(null);
+      setResetting(false);
+    }
+  }
   return (
     <>
       <Shell adminLink={false} onSignOut={() => setLogoutOpen(true)}>
-        <section className="admin">
+        <section className="admin" aria-busy={resetting} inert={resetting}>
           <div className="admin-panel">
             <div className="admin-panel-heading">
               <h1>Users</h1>
@@ -1056,10 +1175,11 @@ function AdminUsers() {
                     }
                     required
                   >
-                    <option value="banking">Banking</option>
-                    <option value="telecommunications">Telecommunications</option>
-                    <option value="retail">Retail</option>
-                    <option value="healthcare">Healthcare</option>
+                    {industryOptions.map((industry) => (
+                      <option key={industry.value} value={industry.value}>
+                        {industry.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <div className="admin-form-actions">
@@ -1088,6 +1208,7 @@ function AdminUsers() {
                     <th>Name</th>
                     <th>Email</th>
                     <th>Status</th>
+                    <th>Industry</th>
                     <th>Identity</th>
                     <th className="actions-column">Actions</th>
                   </tr>
@@ -1095,7 +1216,7 @@ function AdminUsers() {
                 <tbody>
                   {tableError ? (
                     <tr>
-                      <td colSpan={5} className="table-error" role="alert">
+                      <td colSpan={6} className="table-error" role="alert">
                         {tableError} Refresh and try again.
                       </td>
                     </tr>
@@ -1114,6 +1235,7 @@ function AdminUsers() {
                           {user.status}
                         </span>
                       </td>
+                      <td>{industryLabel(user.industry)}</td>
                       <td>
                         <span
                           className={`badge ${user.active ? "active" : "inactive"}`}
@@ -1122,25 +1244,40 @@ function AdminUsers() {
                         </span>
                       </td>
                       <td className="row-actions">
-                        <button
-                          className="table-delete"
-                          type="button"
-                          onClick={() => {
-                            setDeleteError("");
-                            setPendingDelete(user);
-                          }}
-                          aria-label={`Delete ${user.email}`}
-                          title="Delete"
-                        >
-                          <TrashIcon />
-                        </button>
+                        <span className="row-action-group">
+                          <button
+                            className="table-action table-reset"
+                            type="button"
+                            onClick={() => {
+                              setResetError("");
+                              setResetIndustry(user.industry || "banking");
+                              setPendingReset(user);
+                            }}
+                            aria-label={`Reset AIDP environment for ${user.email}`}
+                            title="Reset AIDP"
+                          >
+                            <RefreshIcon />
+                          </button>
+                          <button
+                            className="table-action table-delete"
+                            type="button"
+                            onClick={() => {
+                              setDeleteError("");
+                              setPendingDelete(user);
+                            }}
+                            aria-label={`Delete ${user.email}`}
+                            title="Delete"
+                          >
+                            <TrashIcon />
+                          </button>
+                        </span>
                       </td>
                     </tr>
                     ))
                   )}
                   {!tableError && !visible.length && (
                     <tr>
-                      <td colSpan={5} className="empty">
+                      <td colSpan={6} className="empty">
                         No matching lab users.
                       </td>
                     </tr>
@@ -1152,6 +1289,34 @@ function AdminUsers() {
         </section>
       </Shell>
       <Toast message={message} onDismiss={() => setMessage("")} />
+      <ConfirmModal
+        open={Boolean(pendingReset) && !resetting}
+        kind="reset"
+        title="Reset AIDP environment?"
+        description={`This will delete and reinstall only ${pendingReset?.email ?? "this participant"}'s AIDP job, tables, Object Storage objects, and workspace files for the selected industry. The OCI Identity account is preserved.`}
+        error={resetError}
+        confirmLabel="Reset AIDP"
+        onClose={() => {
+          setResetError("");
+          setPendingReset(null);
+        }}
+        onConfirm={() => void resetUser()}
+      >
+        <label className="confirm-field">
+          Industry
+          <select
+            value={resetIndustry}
+            onChange={(event) => setResetIndustry(event.target.value)}
+            required
+          >
+            {industryOptions.map((industry) => (
+              <option key={industry.value} value={industry.value}>
+                {industry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </ConfirmModal>
       <ConfirmModal
         open={Boolean(pendingDelete)}
         kind="delete"
@@ -1174,6 +1339,15 @@ function AdminUsers() {
         onClose={() => setLogoutOpen(false)}
         onConfirm={() => void logout()}
       />
+      {resetting && (
+        <ProvisioningOverlay
+          phase={resetProgress?.phase || "cleanup"}
+          message={
+            resetProgress?.message ||
+            "Resetting the participant's AIDP environment."
+          }
+        />
+      )}
     </>
   );
 }

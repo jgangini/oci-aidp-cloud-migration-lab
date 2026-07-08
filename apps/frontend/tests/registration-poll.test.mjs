@@ -34,6 +34,7 @@ const {
   RegistrationPollingTimeout,
   parseRetryAfter,
   pollRegistration,
+  registrationProgress,
 } = require(join(output, "registrationPoll.js"));
 
 after(() => rm(output, { recursive: true, force: true }));
@@ -54,6 +55,34 @@ test("polling reconciles pending responses until active", async () => {
   assert.equal(result.status, "active");
   assert.deepEqual(phases, ["schemas"]);
   assert.deepEqual(delays, [2_000]);
+});
+
+test("registration progress counts completed provisioning phases", () => {
+  assert.deepEqual(registrationProgress("identity"), {
+    step: 1,
+    total: 5,
+    percent: 0,
+  });
+  assert.deepEqual(registrationProgress("cleanup"), {
+    step: 1,
+    total: 5,
+    percent: 0,
+  });
+  assert.deepEqual(registrationProgress("schemas"), {
+    step: 3,
+    total: 5,
+    percent: 40,
+  });
+  assert.deepEqual(registrationProgress("permissions"), {
+    step: 5,
+    total: 5,
+    percent: 80,
+  });
+  assert.deepEqual(registrationProgress("future-phase"), {
+    step: 1,
+    total: 5,
+    percent: 0,
+  });
 });
 
 test("polling honors Retry-After and keeps reconciling after 429", async () => {

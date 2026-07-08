@@ -73,6 +73,7 @@
     "admin_url",
     "aidp_workbench_url",
     "aidp_web_socket_endpoint",
+    "aidp_alias_key",
     "tenancy_name",
     "identity_domain_name",
     "compartment_ocid",

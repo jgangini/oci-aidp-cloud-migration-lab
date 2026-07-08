@@ -104,13 +104,16 @@ class FakeApi:
                     ]
                 )
                 if "/clusters/" in base_path:
-                    resource_type, resource_key = "CLUSTER", base_path.rsplit("/", 1)[-1]
+                    resource_type, resource_key = "CLUSTER", "ws/aidp_lab_shared_compute"
+                elif base_path.startswith("/schemas/"):
+                    schema_key = base_path.removeprefix("/schemas/")
+                    resource_type, resource_key = "SCHEMA", schema_key
                 elif "/objects/" in base_path:
                     resource_type, resource_key = "FOLDER", base_path.rsplit("/", 1)[-1]
                 elif base_path.startswith("/workspaces/"):
-                    resource_type, resource_key = "WORKSPACE", base_path.rsplit("/", 1)[-1]
+                    resource_type, resource_key = "WORKSPACE", "ws"
                 else:
-                    resource_type, resource_key = "CATALOG", base_path.rsplit("/", 1)[-1]
+                    resource_type, resource_key = "CATALOG", "aidp_lab"
                 for target in targets:
                     role_key = f"{target}-key"
                     self.actions.setdefault(f"/roles/{role_key}/permissions", []).append(
@@ -126,8 +129,8 @@ class FakeApi:
             return post_apply.ApiResponse(200, {}, {})
         if method == "POST" and path == "/workspaces/ws-key/objects":
             object_path = headers["path"]
-            self.workspace_objects[object_path] = "lab-users-key"
-            return post_apply.ApiResponse(201, None, {"object-key": "lab-users-key"})
+            self.workspace_objects[object_path] = "medallon-key"
+            return post_apply.ApiResponse(201, None, {"object-key": "medallon-key"})
         if method == "GET" and path.startswith("/workspaces/ws-key/objects/"):
             object_path = unquote(path.rsplit("/", 1)[-1])
             object_key = self.workspace_objects.get(object_path)
@@ -147,7 +150,7 @@ class FakeApi:
         return post_apply.ApiResponse(200, {}, {})
 
 
-def test_reconcile_builds_fresh_only_rbac_without_global_schemas_or_volumes(monkeypatch) -> None:
+def test_reconcile_builds_shared_medallion_schemas_without_external_volumes(monkeypatch) -> None:
     monkeypatch.setattr(post_apply.time, "sleep", lambda _: None)
     api = FakeApi()
     outputs = {
@@ -163,28 +166,34 @@ def test_reconcile_builds_fresh_only_rbac_without_global_schemas_or_volumes(monk
     assert reconciled["catalog_name"] == "aidp_lab"
     assert reconciled["global_schema_count"] == 0
     assert reconciled["external_volume_count"] == 0
-    assert not any(
-        method == "POST" and path in {"/schemas", "/volumes"}
-        for method, path, _, _ in api.calls
-    )
+    schema_posts = [
+        payload
+        for method, path, payload, _ in api.calls
+        if method == "POST" and path == "/schemas"
+    ]
+    assert {payload["displayName"] for payload in schema_posts} == {
+        "oci_landing", "oci_bronze", "oci_silver", "oci_gold"
+    }
+    assert not any(method == "POST" and path == "/volumes" for method, path, _, _ in api.calls)
     schema_queries = [params for path, params in api.list_calls if path == "/schemas"]
     volume_queries = [params for path, params in api.list_calls if path == "/volumes"]
     assert all(query["catalogKey"] == "aidp_lab-key" for query in schema_queries)
-    assert volume_queries == [{"catalogKey": "aidp_lab-key"}]
+    assert volume_queries == []
     role_queries = [params for path, params in api.list_calls if path == "/roles"]
     assert {query["displayName"] for query in role_queries} == {
         "AI_DATA_PLATFORM_ADMIN",
         "AIDP_LAB_DEVELOPER",
         "AIDP_LAB_PENDING",
     }
-    assert any("zero global schemas and zero external volumes" in event for event in events)
+    assert any("zero legacy schemas and zero external volumes" in event for event in events)
     cluster_payloads = [payload for method, path, payload, _ in api.calls if method == "POST" and path.endswith("/clusters")]
     assert cluster_payloads[0]["displayName"] == "aidp_lab_shared_compute"
     assert cluster_payloads[0]["type"] == "USER"
     assert cluster_payloads[0]["driverConfig"]["driverShape"] == "amd.generic"
     assert cluster_payloads[0]["workerConfig"]["maxWorkerCount"] == 10
     assert reconciled["shared_compute_key"] == "aidp_lab_shared_compute-key"
-    assert reconciled["root_object_key"] == "lab-users-key"
+    assert reconciled["root_object_key"] == "medallon-key"
+    assert set(reconciled["shared_schema_keys"]) == set(post_apply.LAYERS)
     workspace_permissions = api.actions["/workspaces/ws-key/permissions"]
     assert {
         (item["grantee"], tuple(item["granteePermissions"]))
@@ -204,7 +213,15 @@ def test_reconcile_builds_fresh_only_rbac_without_global_schemas_or_volumes(monk
         "/workspaces/ws-key/clusters/aidp_lab_shared_compute-key/permissions"
     ]
     assert {item["grantee"] for item in compute_permissions} == {"AIDP_LAB_DEVELOPER"}
-    assert "/workspaces/ws-key/objects/lab-users-key/permissions" not in api.actions
+    assert "/workspaces/ws-key/objects/medallon-key/permissions" not in api.actions
+    for layer in post_apply.LAYERS:
+        permissions = api.actions[
+            f"/schemas/aidp_lab.oci_{layer}/permissions"
+        ]
+        assert {
+            (item["grantee"], tuple(item["granteePermissions"]))
+            for item in permissions
+        } == {("AIDP_LAB_DEVELOPER", ("ADMIN",))}
 
 
 def test_reconcile_rejects_operator_without_platform_admin_membership(monkeypatch) -> None:
@@ -236,6 +253,9 @@ def test_operator_platform_admin_membership_retries_eventual_consistency(monkeyp
 
 def test_fresh_only_rejects_legacy_overlapping_volume_without_deleting() -> None:
     api = FakeApi()
+    api.resources["/schemas"] = [
+        {"displayName": "legacy", "key": "legacy-schema"}
+    ]
     api.resources["/volumes"] = [
         {
             "displayName": "landing_data",
@@ -248,6 +268,7 @@ def test_fresh_only_rejects_legacy_overlapping_volume_without_deleting() -> None
         post_apply.assert_fresh_catalog(
             api, "aidp_lab-key", "namespace", "aidp-data-test"
         )
+    assert ("/volumes", {"catalogKey": "aidp_lab-key", "schemaKey": "legacy-schema"}) in api.list_calls
     assert not any(method == "DELETE" for method, _, _, _ in api.calls)
 
 
@@ -373,6 +394,23 @@ def test_permission_action_must_be_observable(monkeypatch) -> None:
         attempts=1,
     )
     assert changed is True
+
+
+def test_schema_admin_can_be_added_over_inherited_catalog_select() -> None:
+    class Api:
+        @staticmethod
+        def list_all(_path):
+            return [
+                {
+                    "grantee": "AIDP_LAB_DEVELOPER",
+                    "granteeType": "ROLE",
+                    "granteePermissions": ["SELECT"],
+                }
+            ]
+
+    assert not post_apply.permission_is_assigned(
+        Api(), "/schemas/schema/permissions", "AIDP_LAB_DEVELOPER", "ADMIN"
+    )
 
 
 def test_new_role_with_null_assignees_has_no_group() -> None:
@@ -531,6 +569,29 @@ def test_post_retry_token_uses_canonical_payload_hash() -> None:
 
 def test_stopped_shared_compute_is_reusable_after_auto_termination() -> None:
     assert post_apply.is_active_or_raise({"lifecycleState": "STOPPED"}, "shared compute")
+
+
+def test_workspace_object_key_accepts_live_folder_path_header() -> None:
+    response = post_apply.ApiResponse(
+        200,
+        "",
+        {"folder": "/Workspace/medallon", "type": "FOLDER"},
+    )
+
+    assert post_apply.workspace_object_key(response, "/Workspace/medallon") == "/Workspace/medallon"
+
+
+def test_workspace_object_key_rejects_mismatched_folder_path() -> None:
+    response = post_apply.ApiResponse(
+        200,
+        "",
+        {"folder": "/Workspace/medallon", "type": "FOLDER"},
+    )
+
+    with pytest.raises(post_apply.ReconcileError, match="mismatched path"):
+        post_apply.workspace_object_key(
+            response, "/Workspace/medallon/participant@example.com"
+        )
 
 
 def test_run_command_returns_only_bootstrap_public_key() -> None:
@@ -1009,11 +1070,48 @@ def test_workspace_waits_until_active(monkeypatch) -> None:
     assert len(sleeps) == 25
 
 
-def test_aidp_api_uses_quick_start_production_endpoint() -> None:
+def test_operator_admin_waits_for_data_plane_visibility(monkeypatch) -> None:
+    api = FakeApi()
+    list_all = api.list_all
+    attempts = 0
+
+    def eventually_visible(path: str, *, params=None) -> list[dict]:
+        nonlocal attempts
+        if path == "/roles" and attempts < 2:
+            attempts += 1
+            raise post_apply.ApiRequestError("GET", path, 404, f"request-{attempts}")
+        return list_all(path, params=params)
+
+    api.list_all = eventually_visible
+    monkeypatch.setattr(post_apply.time, "sleep", lambda _: None)
+
+    post_apply.assert_operator_platform_admin(
+        api, "ocid1.user.oc1..operator", attempts=3
+    )
+
+    assert attempts == 2
+
+
+def test_operator_admin_reports_last_data_plane_request(monkeypatch) -> None:
+    api = FakeApi()
+
+    def unavailable(path: str, **_) -> list[dict]:
+        raise post_apply.ApiRequestError("GET", path, 404, "request-final")
+
+    api.list_all = unavailable
+    monkeypatch.setattr(post_apply.time, "sleep", lambda _: None)
+
+    with pytest.raises(post_apply.ReconcileError, match="request-final"):
+        post_apply.assert_operator_platform_admin(
+            api, "ocid1.user.oc1..operator", attempts=2
+        )
+
+
+def test_aidp_api_uses_workbench_data_plane_endpoint() -> None:
     api = post_apply.AidpApi("us-chicago-1", "ocid1.aidataplatform.test", object(), "deployment")
     assert api.base == (
-        "https://aidpprod.us-chicago-1.oci.oraclecloud.com/20260430/"
-        "aiDataPlatforms/ocid1.aidataplatform.test"
+        "https://datalake.us-chicago-1.oci.oraclecloud.com/20240831/"
+        "dataLakes/ocid1.aidataplatform.test"
     )
 
 
@@ -1047,3 +1145,21 @@ def test_workbench_url_uses_oci_web_socket_endpoint() -> None:
             "identity_domain_name": "Default",
         }
     ) == "https://1yjfbzshsbc4glmdavcord.datalake.oci.oraclecloud.com#?tenant=oci-deploy-1&domain=Default"
+
+
+def test_workbench_url_falls_back_to_control_plane_alias() -> None:
+    assert post_apply.workbench_url(
+        {
+            "aidp_web_socket_endpoint": "",
+            "aidp_alias_endpoint": "nxjjum1xu8a1iw51nzhord",
+            "tenancy_name": "oci-deploy-1",
+            "identity_domain_name": "Default",
+        }
+    ) == "https://nxjjum1xu8a1iw51nzhord.datalake.oci.oraclecloud.com#?tenant=oci-deploy-1&domain=Default"
+
+
+def test_aidp_alias_endpoint_uses_oci_region_key() -> None:
+    assert (
+        post_apply.aidp_alias_endpoint("nxjjum1xu8a1iw51nzh", "us-chicago-1")
+        == "nxjjum1xu8a1iw51nzhord"
+    )

@@ -12,7 +12,10 @@ override_resource {
 override_resource {
   target          = oci_ai_data_platform_ai_data_platform.lab
   override_during = plan
-  values          = { web_socket_endpoint = null }
+  values = {
+    alias_key           = "testalias"
+    web_socket_endpoint = null
+  }
 }
 
 override_data {
@@ -80,6 +83,11 @@ run "resolved_compartment_contract" {
   assert {
     condition     = local.aidp_web_socket_endpoint == ""
     error_message = "A null AIDP WebSocket endpoint must not fail the apply."
+  }
+
+  assert {
+    condition     = local.aidp_workbench_url == "https://testaliasord.datalake.oci.oraclecloud.com#?tenant=oci-deploy-1&domain=Default"
+    error_message = "The AIDP alias must build the direct Workbench URL when the WebSocket endpoint is null."
   }
 
   assert {

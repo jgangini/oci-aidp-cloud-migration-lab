@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import quote
 
 from .industry_kits import DATASET_SPECS, GOLD_SPECS, INDUSTRIES
 
@@ -15,6 +16,8 @@ LAYER_PREFIXES = {
     "silver": "03_silver",
     "gold": "04_gold",
 }
+
+WORKSPACE_ROOT = "/Workspace/medallon"
 
 _ENUM_VALUES = {
     "banking": {
@@ -94,14 +97,57 @@ _TEMPORAL_ORDER = {
 }
 
 
-def schema_name(participant_key: str, layer: str) -> str:
+def schema_name(layer: str) -> str:
     if layer not in LAYER_PREFIXES:
         raise ValueError(f"Unknown medallion layer: {layer}")
-    return f"{participant_key}_{layer}"
+    return f"oci_{layer}"
 
 
-def workspace_root(participant_key: str, industry: str) -> str:
-    return f"/Workspace/lab-users/{participant_key}/{industry}"
+def participant_folder(email: str) -> str:
+    normalized = email.strip().casefold()
+    if (
+        normalized.count("@") != 1
+        or len(normalized) > 254
+        or any(character.isspace() for character in normalized)
+    ):
+        raise ValueError("A valid participant email is required")
+    return quote(normalized, safe="@._+-")
+
+
+def workspace_participant_root(email: str) -> str:
+    return f"{WORKSPACE_ROOT}/{participant_folder(email)}"
+
+
+def workspace_root(email: str, industry: str) -> str:
+    if industry not in INDUSTRIES:
+        raise ValueError("Choose banking, telecommunications, retail, or healthcare")
+    return f"{workspace_participant_root(email)}/{industry}"
+
+
+def table_name(participant_key: str, industry: str, dataset: str) -> str:
+    suffix = dataset if dataset.startswith(f"{industry}_") else f"{industry}_{dataset}"
+    return f"{participant_key}_{suffix}"
+
+
+def table_names(participant_key: str, industry: str, layer: str) -> tuple[str, ...]:
+    if layer not in LAYER_PREFIXES:
+        raise ValueError(f"Unknown medallion layer: {layer}")
+    if industry not in INDUSTRIES:
+        raise ValueError("Choose banking, telecommunications, retail, or healthcare")
+    logical_names = list(DATASET_SPECS[industry])
+    if layer == "silver":
+        logical_names.append("quality_issues")
+    elif layer == "gold":
+        logical_names = [f"{industry}_{name}" for name in GOLD_SPECS[industry]]
+    return tuple(table_name(participant_key, industry, name) for name in logical_names)
+
+
+def participant_table_names(participant_key: str, layer: str) -> frozenset[str]:
+    return frozenset(
+        name
+        for industry in INDUSTRIES
+        for name in table_names(participant_key, industry, layer)
+    )
 
 
 def layer_uri(
@@ -158,16 +204,17 @@ def _ddl_statements(
             ))
     else:
         for short_name, fields in GOLD_SPECS[industry].items():
-            table_name = f"{industry}_{short_name}"
-            tables.append((table_name, list(fields), layer_uri(bucket, namespace, layer, participant_key, industry, table_name), "DELTA"))
-    schema = schema_name(participant_key, layer)
+            logical_table_name = f"{industry}_{short_name}"
+            tables.append((logical_table_name, list(fields), layer_uri(bucket, namespace, layer, participant_key, industry, logical_table_name), "DELTA"))
+    schema = schema_name(layer)
     statements = []
-    for table_name, fields, location, data_format in tables:
+    for dataset, fields, location, data_format in tables:
+        physical_table_name = table_name(participant_key, industry, dataset)
         columns = ", ".join(f"`{name}` {kind}" for name, kind in fields)
         options = " OPTIONS (header 'true')" if data_format == "CSV" else ""
         statements.append(
             "spark.sql(\"\"\"CREATE EXTERNAL TABLE IF NOT EXISTS "
-            f"aidp_lab.{schema}.{table_name} ({columns}) USING {data_format}{options} "
+            f"aidp_lab.{schema}.{physical_table_name} ({columns}) USING {data_format}{options} "
             f"LOCATION '{location}'\"\"\")"
         )
     return "\n".join(statements)
@@ -247,8 +294,14 @@ def _serializable_specs(industry: str) -> dict[str, Any]:
     }
 
 
-def _landing_program(industry: str, participant_key: str, bucket: str, namespace: str) -> str:
-    source = f"{workspace_root(participant_key, industry)}/source"
+def _landing_program(
+    industry: str,
+    participant_key: str,
+    email: str,
+    bucket: str,
+    namespace: str,
+) -> str:
+    source = f"{workspace_root(email, industry)}/source"
     specs = _serializable_specs(industry)
     destinations = {
         name: layer_uri(bucket, namespace, "landing", participant_key, industry, name)
@@ -285,7 +338,10 @@ def _bronze_program(industry: str, participant_key: str, bucket: str, namespace:
         name: layer_uri(bucket, namespace, "bronze", participant_key, industry, name)
         for name in specs
     }
-    landing_schema = schema_name(participant_key, "landing")
+    landing_schema = schema_name("landing")
+    landing_tables = {
+        name: table_name(participant_key, industry, name) for name in specs
+    }
     landing_ddl = _ddl_statements(industry, participant_key, bucket, namespace, "landing")
     bronze_ddl = _ddl_statements(industry, participant_key, bucket, namespace, "bronze")
     return f'''from pyspark.sql import functions as F
@@ -293,11 +349,12 @@ def _bronze_program(industry: str, participant_key: str, bucket: str, namespace:
 specs = {specs!r}
 sources = {json.dumps(sources, sort_keys=True)}
 destinations = {json.dumps(destinations, sort_keys=True)}
+landing_tables = {json.dumps(landing_tables, sort_keys=True)}
 
 {landing_ddl}
 
 for dataset, spec in specs.items():
-    frame = (spark.table(f"aidp_lab.{landing_schema}.{{dataset}}")
+    frame = (spark.table(f"aidp_lab.{landing_schema}.{{landing_tables[dataset]}}")
         .withColumn("_source_file", F.input_file_name())
         .withColumn("_ingested_at", F.current_timestamp()))
     landing_count = frame.count()
@@ -583,12 +640,14 @@ patient_utilization.show(20, truncate=False)
 def user_notebooks(
     industry: str,
     participant_key: str,
+    email: str,
     bucket: str,
     namespace: str,
 ) -> dict[str, dict[str, Any]]:
     _validate_inputs(industry, participant_key, bucket, namespace)
+    participant_folder(email)
     programs = {
-        "landing": _landing_program(industry, participant_key, bucket, namespace),
+        "landing": _landing_program(industry, participant_key, email, bucket, namespace),
         "bronze": _bronze_program(industry, participant_key, bucket, namespace),
         "silver": _silver_program(industry, participant_key, bucket, namespace),
         "gold": _gold_program(industry, participant_key, bucket, namespace),

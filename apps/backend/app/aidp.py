@@ -17,16 +17,22 @@ from .config import Settings
 from .industry_kits import INDUSTRIES, csv_samples as build_csv_samples
 from .notebooks import (
     LAYER_PREFIXES,
+    WORKSPACE_ROOT,
     layer_uri,
+    participant_folder,
+    participant_table_names,
     schema_name,
     user_notebooks as build_user_notebooks,
+    workspace_participant_root,
     workspace_root,
 )
 
 
-API_VERSION = "20260430"
+API_VERSION = "20240831"
 SHARED_COMPUTE_NAME = "aidp_lab_shared_compute"
 CATALOG_NAME = "aidp_lab"
+CONTROL_ROOT = f"{WORKSPACE_ROOT}/.control"
+LEGACY_WORKSPACE_ROOT = "/Workspace/lab-users"
 
 
 class AidpProvisionPending(Exception):
@@ -64,6 +70,7 @@ class LocalAidpClient:
 
     def __init__(self, _: Settings) -> None:
         self.users: dict[str, UserMaterial] = {}
+        self._reset_operations: dict[str, tuple[str, UserMaterial]] = {}
         # ponytail: process-local locks are sufficient for the single-process development adapter.
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -73,37 +80,72 @@ class LocalAidpClient:
     async def healthcheck(self) -> None:
         return None
 
+    @staticmethod
+    def _material(user_ocid: str, email: str, industry: str) -> UserMaterial:
+        if industry not in INDUSTRIES:
+            raise ValueError("Choose banking, telecommunications, retail, or healthcare")
+        key = participant_key(user_ocid)
+        build_csv_samples(industry, key)
+        return UserMaterial(
+            email,
+            industry,
+            key,
+            workspace_root(email, industry),
+            f"wf_{key}_{industry}_medallion",
+        )
+
     async def provision_user(self, user_ocid: str, email: str, industry: str) -> UserMaterial:
         key = participant_key(user_ocid)
         async with self._locks.setdefault(key, asyncio.Lock()):
-            if industry not in INDUSTRIES:
-                raise ValueError("Choose banking, telecommunications, retail, or healthcare")
             existing = self.users.get(key)
             if existing is not None and existing.industry != industry:
                 raise AidpProvisionConflict(
                     "This participant already selected another industry; delete and recreate the participant."
                 )
-            build_csv_samples(industry, key)
-            material = UserMaterial(
-                email,
-                industry,
-                key,
-                workspace_root(key, industry),
-                f"wf_{key}_{industry}_medallion",
-            )
+            material = self._material(user_ocid, email, industry)
             self.users[key] = material
             return material
+
+    async def reset_user(
+        self,
+        user_ocid: str,
+        email: str,
+        industry: str,
+        operation_id: str,
+    ) -> UserMaterial:
+        key = participant_key(user_ocid)
+        async with self._locks.setdefault(key, asyncio.Lock()):
+            completed = self._reset_operations.get(key)
+            if completed is not None and completed[0] == operation_id:
+                if completed[1].industry != industry:
+                    raise AidpProvisionConflict("This reset operation already targets another industry.")
+                return completed[1]
+            material = self._material(user_ocid, email, industry)
+            self.users[key] = material
+            self._reset_operations[key] = (operation_id, material)
+            return material
+
+    async def list_user_industries(self, user_ocids: list[str]) -> dict[str, str]:
+        return {
+            user_ocid: material.industry
+            for user_ocid in user_ocids
+            if (material := self.users.get(participant_key(user_ocid))) is not None
+        }
 
     async def cleanup_user(self, user_ocid: str) -> None:
         key = participant_key(user_ocid)
         async with self._locks.setdefault(key, asyncio.Lock()):
             self.users.pop(key, None)
+            self._reset_operations.pop(key, None)
 
 
 class AidpClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.base = f"https://aidpprod.{settings.aidp_region}.oci.oraclecloud.com/{API_VERSION}/aiDataPlatforms/{settings.aidp_platform_id}"
+        self.base = (
+            f"https://datalake.{settings.aidp_region}.oci.oraclecloud.com/{API_VERSION}/"
+            f"dataLakes/{settings.aidp_platform_id}"
+        )
         import oci
 
         self._oci = oci
@@ -418,11 +460,24 @@ class AidpClient:
         return True
 
     def _workspace_object_key(self, workspace_key: str, path: str) -> str:
-        _, headers = self._workspace_object(workspace_key, path, phase="permissions")
-        object_key = str(headers.get("object-key") or headers.get("Object-Key") or "")
-        if not object_key:
+        body, headers = self._workspace_object(workspace_key, path, phase="permissions")
+        normalized = {str(name).casefold(): value for name, value in headers.items()}
+        object_key = str(normalized.get("object-key") or "")
+        if object_key:
+            return object_key
+        object_path = str(
+            normalized.get("folder")
+            or normalized.get("path")
+            or (body.get("path") if isinstance(body, dict) else "")
+            or ""
+        )
+        if object_path and object_path != path:
+            raise AidpProvisionError(
+                f"AIDP returned a mismatched workspace object path for {path}."
+            )
+        if not object_path:
             raise AidpProvisionPending(f"AIDP has not published workspace object {path} yet.", "permissions")
-        return object_key
+        return object_path
 
     def _upload_notebook(
         self,
@@ -433,7 +488,14 @@ class AidpClient:
         repair_drift: bool = True,
     ) -> bool:
         content_path = f"/workspaces/{workspace_key}/notebook/api/contents/{quote(path, safe='')}"
-        current = self._request("GET", content_path, allow_not_found=True, phase="content")
+        object_body, object_headers = self._workspace_object(
+            workspace_key, path, phase="content"
+        )
+        current = (
+            self._request("GET", content_path, allow_not_found=True, phase="content")
+            if self._workspace_object_exists(object_body, object_headers)
+            else None
+        )
         current_content = current.get("content") if isinstance(current, dict) else None
         if isinstance(current, dict) and current.get("type") not in {None, "notebook"}:
             raise AidpProvisionError(f"Workspace path {path} exists but is not a notebook.")
@@ -480,17 +542,23 @@ class AidpClient:
 
     @staticmethod
     def _control_manifest_path(key: str) -> str:
-        return f"/Workspace/lab-users/.control/{key}.json"
+        return f"{CONTROL_ROOT}/{key}.json"
 
-    def _manifest(self, workspace_key: str, key: str) -> dict[str, Any] | None:
-        path = self._control_manifest_path(key)
+    @staticmethod
+    def _legacy_control_manifest_path(key: str) -> str:
+        return f"{LEGACY_WORKSPACE_ROOT}/.control/{key}.json"
+
+    def _workspace_json(
+        self,
+        workspace_key: str,
+        path: str,
+        invalid_message: str,
+    ) -> dict[str, Any] | None:
         body, headers = self._workspace_object(workspace_key, path, phase="workspace")
         if not self._workspace_object_exists(body, headers):
             return None
         if self._workspace_object_type(body, headers) == "FOLDER":
-            raise AidpProvisionError(
-                "The participant control manifest path is a folder; delete it before retrying."
-            )
+            raise AidpProvisionError(invalid_message)
         try:
             if isinstance(body, dict):
                 payload = body
@@ -501,14 +569,36 @@ class AidpClient:
             else:
                 raise TypeError("unsupported control manifest body")
         except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AidpProvisionError(
-                "The participant control manifest is invalid; delete the participant before retrying."
-            ) from exc
+            raise AidpProvisionError(invalid_message) from exc
         if not isinstance(payload, dict):
-            raise AidpProvisionError(
-                "The participant control manifest is invalid; delete the participant before retrying."
-            )
+            raise AidpProvisionError(invalid_message)
         return payload
+
+    def _manifest(self, workspace_key: str, key: str) -> dict[str, Any] | None:
+        return self._workspace_json(
+            workspace_key,
+            self._control_manifest_path(key),
+            "The participant control manifest is invalid; delete the participant before retrying.",
+        )
+
+    @staticmethod
+    def _manifest_workspace_path(manifest: dict[str, Any], key: str) -> str:
+        workspace_path = str(manifest.get("workspace_path") or "")
+        relative_path = workspace_path.removeprefix(f"{WORKSPACE_ROOT}/")
+        parts = relative_path.split("/")
+        if (
+            manifest.get("layout_version") != 2
+            or manifest.get("participant_key") != key
+            or not workspace_path.startswith(f"{WORKSPACE_ROOT}/")
+            or len(parts) != 2
+            or parts[0] in {"", ".control"}
+            or parts[1] not in INDUSTRIES
+            or manifest.get("industry") != parts[1]
+        ):
+            raise AidpProvisionError(
+                "The participant control manifest does not contain an exact workspace path; cleanup stopped."
+            )
+        return workspace_path
 
     def _write_manifest(
         self,
@@ -525,8 +615,10 @@ class AidpClient:
                 repair_drift=True,
             )
         except AidpProvisionPending as exc:
-            phase = str(manifest.get("phase") or "content")
-            if phase not in {"workspace", "schemas", "content", "permissions"}:
+            reset = manifest.get("reset")
+            reset_phase = str(reset.get("phase") or "") if isinstance(reset, dict) else ""
+            phase = "cleanup" if reset_phase == "cleanup" else str(manifest.get("phase") or "content")
+            if phase not in {"cleanup", "workspace", "schemas", "content", "permissions"}:
                 phase = "permissions"
             raise AidpProvisionPending(
                 "AIDP is still accepting the participant control manifest.", phase
@@ -536,17 +628,25 @@ class AidpClient:
         self,
         workspace_key: str,
         key: str,
+        email: str,
         industry: str,
     ) -> dict[str, Any]:
+        root = workspace_root(email, industry)
         existing = self._manifest(workspace_key, key)
-        if existing is not None and (
-            existing.get("participant_key") != key or existing.get("industry") != industry
-        ):
-            raise AidpProvisionConflict(
-                "This participant already selected another industry; delete and recreate the participant."
-            )
+        if existing is not None:
+            self._manifest_workspace_path(existing, key)
+            if existing.get("industry") != industry or existing.get("workspace_path") != root:
+                raise AidpProvisionConflict(
+                    "This participant already has a different lab layout or industry; reset the participant environment."
+                )
         if existing is None:
-            existing = {"participant_key": key, "industry": industry, "phase": "workspace"}
+            existing = {
+                "layout_version": 2,
+                "participant_key": key,
+                "industry": industry,
+                "workspace_path": root,
+                "phase": "workspace",
+            }
             self._write_manifest(workspace_key, key, existing)
         return existing
 
@@ -572,10 +672,9 @@ class AidpClient:
     def _ensure_schema(
         self,
         catalog_key: str,
-        key: str,
         layer: str,
     ) -> tuple[dict[str, Any], bool]:
-        name = schema_name(key, layer)
+        name = schema_name(layer)
 
         def matches() -> list[dict[str, Any]]:
             return [
@@ -601,7 +700,7 @@ class AidpClient:
             "/schemas",
             payload={
                 "displayName": name,
-                "description": f"{layer.title()} schema for {key}",
+                "description": f"Shared collaborative {layer.title()} schema for the AIDP lab",
                 "catalogName": CATALOG_NAME,
             },
             phase="schemas",
@@ -621,12 +720,11 @@ class AidpClient:
     def _ensure_catalog_contract(
         self,
         catalog_key: str,
-        key: str,
     ) -> tuple[dict[str, dict[str, Any]], bool]:
         schemas: dict[str, dict[str, Any]] = {}
         changed = False
         for layer in LAYER_PREFIXES:
-            schemas[layer], created = self._ensure_schema(catalog_key, key, layer)
+            schemas[layer], created = self._ensure_schema(catalog_key, layer)
             changed = changed or created
         return schemas, changed
 
@@ -764,12 +862,12 @@ class AidpClient:
         compute_key: str,
         key: str,
         industry: str,
+        root: str,
         notebooks: dict[str, dict[str, Any]],
         *,
         repair_drift: bool = True,
     ) -> tuple[str, str, bool]:
         job_name = f"wf_{key}_{industry}_medallion"
-        root = workspace_root(key, industry)
         tasks = self._job_tasks(root, compute_key, list(notebooks))
         payload = {
             "name": job_name,
@@ -912,21 +1010,20 @@ class AidpClient:
         self,
         workspace_key: str,
         user_ocid: str,
-        key: str,
+        participant_root: str,
         job_key: str,
-        schemas: dict[str, dict[str, Any]],
     ) -> bool:
-        root_key = self._workspace_object_key(workspace_key, "/Workspace/lab-users")
-        participant_object_key = self._workspace_object_key(workspace_key, f"/Workspace/lab-users/{key}")
+        root_key = self._workspace_object_key(workspace_key, WORKSPACE_ROOT)
+        participant_object_key = self._workspace_object_key(workspace_key, participant_root)
         changed = self._ensure_permission(
-            f"/workspaces/{workspace_key}/objects/{root_key}",
+            f"/workspaces/{workspace_key}/objects/{quote(root_key, safe='')}",
             "assignWorkspaceObjectPermissionDetails",
             user_ocid,
             "READ",
             inheritable=False,
         )
         changed = self._ensure_permission(
-            f"/workspaces/{workspace_key}/objects/{participant_object_key}",
+            f"/workspaces/{workspace_key}/objects/{quote(participant_object_key, safe='')}",
             "assignWorkspaceObjectPermissionDetails",
             user_ocid,
             "ADMIN",
@@ -938,13 +1035,6 @@ class AidpClient:
             user_ocid,
             "MANAGE",
         ) or changed
-        for schema in schemas.values():
-            changed = self._ensure_permission(
-                f"/schemas/{schema['key']}",
-                "assignSchemaPermissionDetails",
-                user_ocid,
-                "ADMIN",
-            ) or changed
         return changed
 
     def _ensure_workspace_layout(
@@ -977,6 +1067,7 @@ class AidpClient:
         workspace_key: str,
         compute_key: str,
         key: str,
+        email: str,
         industry: str,
         root: str,
         repair_drift: bool,
@@ -1001,6 +1092,7 @@ class AidpClient:
         notebooks = build_user_notebooks(
             industry,
             key,
+            email,
             self.settings.bucket_name,
             self.settings.objectstorage_namespace,
         )
@@ -1016,6 +1108,7 @@ class AidpClient:
             compute_key,
             key,
             industry,
+            root,
             notebooks,
             repair_drift=repair_drift,
         )
@@ -1025,22 +1118,24 @@ class AidpClient:
         if industry not in INDUSTRIES:
             raise ValueError("Choose banking, telecommunications, retail, or healthcare")
         key = participant_key(user_ocid)
+        participant_folder(email)
         workspace_key = str(self._workspace()["key"])
         workspace_changed = self._ensure_workspace_layout(
             workspace_key,
-            ("/Workspace/lab-users", "/Workspace/lab-users/.control"),
+            (WORKSPACE_ROOT, CONTROL_ROOT),
         )
-        manifest = self._ensure_manifest(workspace_key, key, industry)
+        manifest = self._ensure_manifest(workspace_key, key, email, industry)
         previous_phase = str(manifest.get("phase") or "workspace")
         was_active = previous_phase == "active"
         repair_drift = not was_active
-        root = workspace_root(key, industry)
+        participant_root = workspace_participant_root(email)
+        root = workspace_root(email, industry)
         job_name = f"wf_{key}_{industry}_medallion"
 
         compute_key = str(self._shared_compute(workspace_key)["key"])
         workspace_changed = self._ensure_workspace_layout(
             workspace_key,
-            (f"/Workspace/lab-users/{key}", root, f"{root}/source"),
+            (participant_root, root, f"{root}/source"),
         ) or workspace_changed
         self._pending_after_change(
             workspace_changed,
@@ -1052,7 +1147,7 @@ class AidpClient:
         )
 
         catalog_key = str(self._catalog()["key"])
-        schemas, schemas_changed = self._ensure_catalog_contract(catalog_key, key)
+        _schemas, schemas_changed = self._ensure_catalog_contract(catalog_key)
         self._pending_after_change(
             schemas_changed,
             was_active,
@@ -1063,7 +1158,7 @@ class AidpClient:
         )
 
         job_name, job_key, content_changed = self._ensure_participant_content(
-            workspace_key, compute_key, key, industry, root, repair_drift
+            workspace_key, compute_key, key, email, industry, root, repair_drift
         )
         self._pending_after_change(
             content_changed,
@@ -1077,9 +1172,8 @@ class AidpClient:
         permissions_changed = self._ensure_permissions(
             workspace_key,
             user_ocid,
-            key,
+            participant_root,
             job_key,
-            schemas,
         )
         if permissions_changed and was_active:
             raise AidpProvisionPending(
@@ -1094,6 +1188,170 @@ class AidpClient:
         key = participant_key(user_ocid)
         async with self._locks.setdefault(key, asyncio.Lock()):
             return await asyncio.to_thread(self._provision_user, user_ocid, email, industry)
+
+    @staticmethod
+    def _reset_record(
+        manifest: dict[str, Any],
+        operation_id: str,
+        industry: str,
+        target_root: str,
+    ) -> dict[str, Any]:
+        reset = manifest.get("reset")
+        if not isinstance(reset, dict):
+            raise AidpProvisionError("The participant reset journal is invalid; reset stopped.")
+        if reset.get("operation_id") != operation_id:
+            raise AidpProvisionConflict("Another AIDP reset is already in progress for this participant.")
+        if reset.get("target_industry") != industry or reset.get("target_workspace_path") != target_root:
+            raise AidpProvisionConflict("This reset operation already targets another industry.")
+        return reset
+
+    def _ensure_reset_manifest(
+        self,
+        workspace_key: str,
+        key: str,
+        email: str,
+        industry: str,
+        operation_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        target_root = workspace_root(email, industry)
+        manifest = self._manifest(workspace_key, key)
+        if manifest is None:
+            manifest = {
+                "layout_version": 2,
+                "participant_key": key,
+                "industry": industry,
+                "workspace_path": target_root,
+                "phase": "workspace",
+            }
+        else:
+            self._manifest_workspace_path(manifest, key)
+        existing = manifest.get("reset")
+        if isinstance(existing, dict) and existing.get("operation_id") == operation_id:
+            return manifest, self._reset_record(manifest, operation_id, industry, target_root)
+        if isinstance(existing, dict) and existing.get("phase") in {"cleanup", "provision"}:
+            raise AidpProvisionConflict("Another AIDP reset is already in progress for this participant.")
+        if existing is not None and not isinstance(existing, dict):
+            raise AidpProvisionError("The participant reset journal is invalid; reset stopped.")
+        reset = {
+            "operation_id": operation_id,
+            "target_industry": industry,
+            "target_workspace_path": target_root,
+            "phase": "cleanup",
+        }
+        manifest["reset"] = reset
+        self._write_manifest(workspace_key, key, manifest)
+        return manifest, reset
+
+    def _reset_user(
+        self,
+        user_ocid: str,
+        email: str,
+        industry: str,
+        operation_id: str,
+    ) -> UserMaterial:
+        if industry not in INDUSTRIES:
+            raise ValueError("Choose banking, telecommunications, retail, or healthcare")
+        key = participant_key(user_ocid)
+        participant_folder(email)
+        target_root = workspace_root(email, industry)
+        workspace_key = str(self._workspace()["key"])
+        self._ensure_workspace_layout(workspace_key, (WORKSPACE_ROOT, CONTROL_ROOT))
+        manifest, reset = self._ensure_reset_manifest(
+            workspace_key, key, email, industry, operation_id
+        )
+        phase = str(reset.get("phase") or "")
+        if phase == "cleanup":
+            try:
+                self._cleanup_user(key, preserve_manifest=True)
+                self._delete_workspace_path(
+                    workspace_key,
+                    f"{LEGACY_WORKSPACE_ROOT}/{participant_folder(email)}",
+                    "Legacy email-named workspace deletion is still in progress.",
+                )
+            except AidpProvisionPending as exc:
+                raise AidpProvisionPending(str(exc), "cleanup") from exc
+            manifest = self._manifest(workspace_key, key)
+            if manifest is None:
+                raise AidpProvisionError("The participant reset journal disappeared during cleanup.")
+            reset = self._reset_record(manifest, operation_id, industry, target_root)
+            manifest.update(
+                industry=industry,
+                workspace_path=target_root,
+                phase="workspace",
+            )
+            reset["phase"] = "provision"
+            self._write_manifest(workspace_key, key, manifest)
+        elif phase not in {"provision", "complete"}:
+            raise AidpProvisionError("The participant reset journal has an unsupported phase.")
+
+        material = self._provision_user(user_ocid, email, industry)
+        if phase != "complete":
+            manifest = self._manifest(workspace_key, key)
+            if manifest is None:
+                raise AidpProvisionError("The participant reset journal disappeared during provisioning.")
+            reset = self._reset_record(manifest, operation_id, industry, target_root)
+            reset["phase"] = "complete"
+            self._write_manifest(workspace_key, key, manifest)
+        return material
+
+    async def reset_user(
+        self,
+        user_ocid: str,
+        email: str,
+        industry: str,
+        operation_id: str,
+    ) -> UserMaterial:
+        key = participant_key(user_ocid)
+        async with self._locks.setdefault(key, asyncio.Lock()):
+            return await asyncio.to_thread(
+                self._reset_user, user_ocid, email, industry, operation_id
+            )
+
+    def _user_industries(self, user_ocids: list[str]) -> dict[str, str]:
+        if not user_ocids:
+            return {}
+        workspace_key = str(self._workspace()["key"])
+        keys = {participant_key(user_ocid): user_ocid for user_ocid in user_ocids}
+        expected_jobs = {
+            f"wf_{key}_{industry}_medallion": (user_ocid, industry)
+            for key, user_ocid in keys.items()
+            for industry in INDUSTRIES
+        }
+        matches: dict[str, set[str]] = {user_ocid: set() for user_ocid in user_ocids}
+        for job in self._list(f"/workspaces/{workspace_key}/jobs", phase="content"):
+            match = expected_jobs.get(self._resource_name(job))
+            if match is not None:
+                matches[match[0]].add(match[1])
+        industries = {
+            user_ocid: next(iter(values))
+            for user_ocid, values in matches.items()
+            if len(values) == 1
+        }
+        for key, user_ocid in keys.items():
+            if user_ocid in industries:
+                continue
+            manifest = self._manifest(workspace_key, key)
+            if manifest is not None:
+                self._manifest_workspace_path(manifest, key)
+                reset = manifest.get("reset")
+                candidate = (
+                    reset.get("target_industry")
+                    if isinstance(reset, dict) and reset.get("phase") in {"cleanup", "provision"}
+                    else manifest.get("industry")
+                )
+            else:
+                legacy = self._workspace_json(
+                    workspace_key,
+                    self._legacy_control_manifest_path(key),
+                    "The legacy participant control manifest is invalid.",
+                )
+                candidate = legacy.get("industry") if legacy and legacy.get("participant_key") == key else None
+            if candidate in INDUSTRIES:
+                industries[user_ocid] = str(candidate)
+        return industries
+
+    async def list_user_industries(self, user_ocids: list[str]) -> dict[str, str]:
+        return await asyncio.to_thread(self._user_industries, user_ocids)
 
     def _delete_object_storage_prefix(self, prefix: str) -> None:
         start: str | None = None
@@ -1155,20 +1413,37 @@ class AidpClient:
                 "Participant workflow deletion is still in progress.", "content"
             )
 
-    def _participant_schemas(
+    def _shared_schemas(
+        self,
+        catalog_key: str,
+    ) -> dict[str, dict[str, Any]]:
+        schemas = self._list(
+            "/schemas",
+            params={"catalogKey": catalog_key},
+            phase="schemas",
+        )
+        result: dict[str, dict[str, Any]] = {}
+        for layer in LAYER_PREFIXES:
+            name = schema_name(layer)
+            matches = [schema for schema in schemas if self._resource_name(schema) == name]
+            if len(matches) > 1:
+                raise AidpProvisionError(f"AIDP has duplicate schemas named {name}.")
+            if matches:
+                result[layer] = matches[0]
+        return result
+
+    def _legacy_participant_schemas(
         self,
         catalog_key: str,
         key: str,
     ) -> list[dict[str, Any]]:
-        expected_schema_names = {schema_name(key, layer) for layer in LAYER_PREFIXES}
+        expected = {f"{key}_{layer}" for layer in LAYER_PREFIXES}
         return [
             schema
             for schema in self._list(
-                "/schemas",
-                params={"catalogKey": catalog_key},
-                phase="schemas",
+                "/schemas", params={"catalogKey": catalog_key}, phase="schemas"
             )
-            if self._resource_name(schema) in expected_schema_names
+            if self._resource_name(schema) in expected
         ]
 
     def _schema_tables(
@@ -1183,28 +1458,52 @@ class AidpClient:
         )
 
     def _cleanup_tables(self, catalog_key: str, key: str) -> None:
-        for schema in self._participant_schemas(catalog_key, key):
+        schemas = self._shared_schemas(catalog_key)
+        for layer, schema in schemas.items():
             if not schema.get("key"):
                 continue
             schema_key = str(schema["key"])
+            expected = participant_table_names(key, layer)
             for table in self._schema_tables(catalog_key, schema_key):
                 table_key = table.get("key")
-                if table_key:
+                if table_key and self._resource_name(table) in expected:
                     self._request(
                         "DELETE",
                         f"/tables/{table_key}",
                         allow_not_found=True,
                         phase="schemas",
                     )
-        for schema in self._participant_schemas(catalog_key, key):
+        for layer, schema in self._shared_schemas(catalog_key).items():
             schema_key = str(schema.get("key") or "")
-            if schema_key and self._schema_tables(catalog_key, schema_key):
+            expected = participant_table_names(key, layer)
+            if schema_key and any(
+                self._resource_name(table) in expected
+                for table in self._schema_tables(catalog_key, schema_key)
+            ):
                 raise AidpProvisionPending(
                     "Participant table deletion is still in progress.", "schemas"
                 )
 
-    def _cleanup_schemas(self, catalog_key: str, key: str) -> None:
-        for schema in self._participant_schemas(catalog_key, key):
+    def _cleanup_legacy_tables(self, catalog_key: str, key: str) -> None:
+        for schema in self._legacy_participant_schemas(catalog_key, key):
+            schema_key = str(schema.get("key") or "")
+            if schema_key:
+                for table in self._schema_tables(catalog_key, schema_key):
+                    table_key = str(table.get("key") or "")
+                    if table_key:
+                        self._request(
+                            "DELETE",
+                            f"/tables/{table_key}",
+                            allow_not_found=True,
+                            phase="schemas",
+                        )
+                if self._schema_tables(catalog_key, schema_key):
+                    raise AidpProvisionPending(
+                        "Legacy participant table deletion is still in progress.", "schemas"
+                    )
+
+    def _cleanup_legacy_schemas(self, catalog_key: str, key: str) -> None:
+        for schema in self._legacy_participant_schemas(catalog_key, key):
             schema_key = str(schema.get("key") or "")
             state = str(schema.get("lifecycleState") or "").upper()
             if not schema_key or state == "DELETING":
@@ -1215,9 +1514,9 @@ class AidpClient:
                 allow_not_found=True,
                 phase="schemas",
             )
-        if self._participant_schemas(catalog_key, key):
+        if self._legacy_participant_schemas(catalog_key, key):
             raise AidpProvisionPending(
-                "Participant schema deletion is still in progress.", "schemas"
+                "Legacy participant schema deletion is still in progress.", "schemas"
             )
 
     def _cleanup_object_storage(self, key: str) -> None:
@@ -1255,22 +1554,40 @@ class AidpClient:
         if self._workspace_object_exists(body, headers):
             raise AidpProvisionPending(pending_message, "content")
 
-    def _cleanup_user(self, key: str) -> None:
+    def _cleanup_user(self, key: str, preserve_manifest: bool = False) -> None:
         workspace_key = str(self._workspace()["key"])
+        manifest = self._manifest(workspace_key, key)
+        participant_root = ""
+        if manifest is not None:
+            workspace_path = self._manifest_workspace_path(manifest, key)
+            participant_root = workspace_path.rsplit("/", 1)[0]
         self._cleanup_jobs(workspace_key, key)
         catalog_key = str(self._catalog()["key"])
         self._cleanup_tables(catalog_key, key)
-        self._cleanup_schemas(catalog_key, key)
+        self._cleanup_legacy_tables(catalog_key, key)
+        self._cleanup_legacy_schemas(catalog_key, key)
         self._cleanup_object_storage(key)
+        if participant_root:
+            self._delete_workspace_path(
+                workspace_key,
+                participant_root,
+                "Participant workspace deletion is still in progress.",
+            )
         self._delete_workspace_path(
             workspace_key,
-            f"/Workspace/lab-users/{key}",
-            "Participant workspace deletion is still in progress.",
+            f"{LEGACY_WORKSPACE_ROOT}/{key}",
+            "Legacy participant workspace deletion is still in progress.",
         )
+        if not preserve_manifest:
+            self._delete_workspace_path(
+                workspace_key,
+                self._control_manifest_path(key),
+                "Participant control manifest deletion is still in progress.",
+            )
         self._delete_workspace_path(
             workspace_key,
-            self._control_manifest_path(key),
-            "Participant control manifest deletion is still in progress.",
+            self._legacy_control_manifest_path(key),
+            "Legacy participant control manifest deletion is still in progress.",
         )
 
 

@@ -4,16 +4,17 @@ import json
 import pytest
 
 from app.industry_kits import DATASET_SPECS, GOLD_SPECS, INDUSTRIES
-from app.notebooks import user_notebooks
+from app.notebooks import schema_name, table_name, user_notebooks
 
 
 PARTICIPANT = "u_0123456789abcdef"
+EMAIL = "ada.lovelace@example.com"
 BUCKET = "aidp-lab-4"
 NAMESPACE = "tenantnamespace"
 
 
 def _rendered(industry: str) -> tuple[dict, str]:
-    notebooks = user_notebooks(industry, PARTICIPANT, BUCKET, NAMESPACE)
+    notebooks = user_notebooks(industry, PARTICIPANT, EMAIL, BUCKET, NAMESPACE)
     return notebooks, json.dumps(notebooks, sort_keys=True)
 
 
@@ -27,7 +28,7 @@ def test_notebooks_are_deterministic_valid_tutorials_with_exact_names(industry: 
         f"04_gold_{industry}.ipynb",
     ]
     assert rendered == json.dumps(
-        user_notebooks(industry, PARTICIPANT, BUCKET, NAMESPACE), sort_keys=True
+        user_notebooks(industry, PARTICIPANT, EMAIL, BUCKET, NAMESPACE), sort_keys=True
     )
 
     for name, notebook in notebooks.items():
@@ -77,7 +78,7 @@ def test_generated_dataset_specs_are_executable_python(industry: str) -> None:
 @pytest.mark.parametrize("industry", INDUSTRIES)
 def test_notebooks_use_only_participant_workspace_and_object_storage_paths(industry: str) -> None:
     _, rendered = _rendered(industry)
-    assert f"/Workspace/lab-users/{PARTICIPANT}/{industry}/source" in rendered
+    assert f"/Workspace/medallon/{EMAIL}/{industry}/source" in rendered
     for prefix in ("01_landing", "02_bronze", "03_silver", "04_gold"):
         assert (
             f"oci://{BUCKET}@{NAMESPACE}/{prefix}/users/{PARTICIPANT}/{industry}/"
@@ -120,8 +121,8 @@ def test_banking_registers_exactly_fifteen_external_tables() -> None:
     all_programs = "\n".join(programs.values())
     assert "USING CSV OPTIONS (header 'true') LOCATION" in all_programs
     assert "USING DELTA LOCATION" in all_programs
-    assert f"aidp_lab.{PARTICIPANT}_landing.branches" in all_programs
-    assert f"aidp_lab.{PARTICIPANT}_silver.quality_issues" in all_programs
+    assert f"aidp_lab.{schema_name('landing')}.{table_name(PARTICIPANT, 'banking', 'branches')}" in all_programs
+    assert f"aidp_lab.{schema_name('silver')}.{table_name(PARTICIPANT, 'banking', 'quality_issues')}" in all_programs
 
 
 def test_banking_customer_metrics_use_a_real_thirty_day_window() -> None:
@@ -183,7 +184,10 @@ def test_gold_uses_exact_industry_table_names_and_safe_overwrites(industry: str)
         for cell in notebooks[f"04_gold_{industry}.ipynb"]["cells"]
         if cell["cell_type"] == "code"
     )
-    expected_tables = {f"{industry}_{name}" for name in GOLD_SPECS[industry]}
+    expected_tables = {
+        table_name(PARTICIPANT, industry, f"{industry}_{name}")
+        for name in GOLD_SPECS[industry]
+    }
     assert len(expected_tables) == 2
     assert all(f".{table} (" in program for table in expected_tables)
     assert program.count("CREATE EXTERNAL TABLE IF NOT EXISTS") == 2
@@ -193,11 +197,16 @@ def test_gold_uses_exact_industry_table_names_and_safe_overwrites(industry: str)
 
 
 @pytest.mark.parametrize(
-    ("participant, bucket, namespace"),
-    (("email@example.com", BUCKET, NAMESPACE), (PARTICIPANT, "bad'", NAMESPACE), (PARTICIPANT, BUCKET, "")),
+    ("participant, email, bucket, namespace"),
+    (
+        ("email@example.com", EMAIL, BUCKET, NAMESPACE),
+        (PARTICIPANT, "invalid email", BUCKET, NAMESPACE),
+        (PARTICIPANT, EMAIL, "bad'", NAMESPACE),
+        (PARTICIPANT, EMAIL, BUCKET, ""),
+    ),
 )
 def test_notebook_paths_reject_unsafe_components(
-    participant: str, bucket: str, namespace: str
+    participant: str, email: str, bucket: str, namespace: str
 ) -> None:
     with pytest.raises(ValueError):
-        user_notebooks("banking", participant, bucket, namespace)
+        user_notebooks("banking", participant, email, bucket, namespace)
