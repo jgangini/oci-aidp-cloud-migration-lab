@@ -1,6 +1,6 @@
 # Terraform and OCI infrastructure
 
-The Terraform package in [`terraform/`](../terraform/) is the deployment backbone for release v1.0.1. The current commit history shows repeated fixes around VM networking, OCI bootstrap, capacity selection, AIDP reconciliation, and lab-user management, which means this area is the most operationally sensitive part of the repo.
+The Terraform package in [`terraform/`](../terraform/) is the deployment backbone for release v1.0.2. The current commit history shows repeated fixes around VM networking, OCI bootstrap, capacity selection, AIDP reconciliation, and lab-user management, which means this area is the most operationally sensitive part of the repo.
 
 ## What it provisions
 Based on the root README and the Terraform file structure, the package manages:
@@ -38,7 +38,7 @@ The README says Deploy Studio preflight discovers the tenancy home region and op
 
 Participant provisioning uses external tables over OCI URIs in the one lab bucket. It does not create external AIDP volumes or an explicit OSCS/OpenSearch resource. Developer IAM may `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket; the operator keeps the administrative identity used to create AIDP, and AIDP-internal permissions remain the primary authorization layer.
 
-The bucket intentionally omits `kms_key_id`, so OCI encrypts it with an Oracle-managed key. Release v1.0.1 creates no Vault, KMS key, secret, OAuth application, dedicated provisioner, or additional API key. The VM creates a temporary RSA 3072-bit bootstrap key. Post-apply encrypts the exact operator config/key with AES-256-GCM, wraps the data key with RSA-OAEP/SHA-256, and uploads the envelope to `.bootstrap/operator-credentials.json`. The VM validates the operator OCID and fingerprint, installs the profile atomically with mode `0600`, deletes and verifies removal of the object, and removes the temporary RSA key before runtime readiness.
+The bucket intentionally omits `kms_key_id`, so OCI encrypts it with an Oracle-managed key. Release v1.0.2 creates no Vault, KMS key, secret, OAuth application, dedicated provisioner, or additional API key. The VM creates a temporary RSA 3072-bit bootstrap key. Post-apply encrypts the exact operator config/key with AES-256-GCM, wraps the data key with RSA-OAEP/SHA-256, and uploads the envelope to `.bootstrap/operator-credentials.json`. The VM validates the operator OCID and fingerprint, installs the profile atomically with mode `0600`, deletes and verifies removal of the object, and removes the temporary RSA key before runtime readiness.
 
 ### Safety contracts
 The top-level README also documents these important constraints:

@@ -34,7 +34,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - run: pip install -r apps/backend/requirements-dev.txt
-      - run: pytest apps/backend/tests terraform/tests
+      - run: python -m pytest apps/backend/tests terraform/tests
         env:
           SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
       - run: npm ci

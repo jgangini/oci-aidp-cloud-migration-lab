@@ -1,6 +1,6 @@
 # Operations and local run modes
 
-Release v1.0.1 has three operational modes that matter for development and validation.
+Release v1.0.2 has three operational modes that matter for development and validation.
 
 ## 1. Full OCI deployment
 The top-level README describes the Deploy Studio package that provisions OCI resources, creates the VM, and wires Identity Domains and AIDP together. This is the production-like path and the one that matters most for lab operators.

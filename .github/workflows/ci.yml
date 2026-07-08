@@ -38,7 +38,7 @@ jobs:
           cache: pip
           cache-dependency-path: apps/backend/requirements-dev.txt
       - run: pip install -r apps/backend/requirements-dev.txt
-      - run: pytest apps/backend/tests terraform/tests
+      - run: python -m pytest apps/backend/tests terraform/tests
         env:
           SESSION_SECRET_FILE: ${{ runner.temp }}/aidp-lab/session.key
 
