@@ -26,6 +26,7 @@ The top-level README is the user-facing source of truth for safety constraints, 
 - Backend settings: [`apps/backend/app/config.py`](../apps/backend/app/config.py)
 - Identity client: [`apps/backend/app/identity.py`](../apps/backend/app/identity.py)
 - AIDP provisioning client: [`apps/backend/app/aidp.py`](../apps/backend/app/aidp.py)
+- One-use operator credential installer: [`apps/backend/app/credential_bootstrap.py`](../apps/backend/app/credential_bootstrap.py)
 - Industry data contracts: [`apps/backend/app/industry_kits.py`](../apps/backend/app/industry_kits.py)
 - Medallion notebooks: [`apps/backend/app/notebooks.py`](../apps/backend/app/notebooks.py)
 - Security helpers: [`apps/backend/app/security.py`](../apps/backend/app/security.py)
@@ -47,7 +48,7 @@ The top-level README is the user-facing source of truth for safety constraints, 
 - Release v1.0.0 uses a single private `aidp-data-<suffix>` bucket with medallion prefixes `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/`; it uses OCI URIs and external tables, not external volumes or explicit OSCS/OpenSearch.
 - Participant folders and four per-participant schemas use an opaque key, never an email address.
 - Registration moves a user from pending to developers only after workspace, schemas, content, and permissions are complete.
-- AIDP access is split between pending, developer, provisioner, and per-participant grants; the provisioner uses one dedicated API key to sign Identity Domains and AIDP requests, without OAuth, Vault, or an instance-principal fallback.
+- AIDP access is split between pending, developer, operator-admin, and per-participant grants. The uploaded operator remains a direct member of built-in `AI_DATA_PLATFORM_ADMIN`; its exact profile is delivered once through an authenticated encrypted envelope. There is no `AIDP_LAB_PROVISIONER`, additional API key, OAuth client, Vault secret, or runtime instance-principal fallback.
 - Registration and administrator passwords are handled as PBKDF2 hashes, not plaintext secrets.
 - The admin session is an HMAC-signed cookie named `__Host-aidp_lab_admin`.
 - OCI-connected local development uses the same image as the VM, localhost-only ports, a sanitized ignored OCI config, and read-only binds for that config and the original operator key.

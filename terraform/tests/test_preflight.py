@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 TERRAFORM_ROOT = Path(__file__).parents[1]
@@ -102,7 +104,7 @@ def _select(
             "compartment_mode": compartment_mode,
             "inputs": {},
         },
-        {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
+        {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
         identity_factory=lambda _config: identity,
         compute_factory=lambda _config: compute,
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
@@ -116,6 +118,7 @@ def test_preflight_selects_e5_and_discovers_home_region() -> None:
     result, compute = _select({preflight.E5_SHAPE: (available, "1"), preflight.E4_SHAPE: (available, "2")})
     assert result["inputs"] == {
         "home_region": "us-ashburn-1",
+        "operator_user_ocid": "ocid1.user.oc1..operator",
         "preferred_vm_shape": preflight.E5_SHAPE,
         "availability_domain_index": 0,
     }
@@ -197,7 +200,7 @@ def test_preflight_requires_public_identity_domain_signing_certificate() -> None
     with pytest.raises(RuntimeError, match="Access Signing Certificate"):
         preflight.select_inputs(
             {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
-            {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
+            {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
             identity_factory=lambda _config: Identity(),
             compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
             identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(False),
@@ -216,7 +219,7 @@ def test_preflight_finds_default_domain_by_stable_type() -> None:
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
     preflight.select_inputs(
         {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
-        {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
+        {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
         identity_factory=lambda _config: RecordingIdentity(),
         compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
@@ -287,7 +290,7 @@ def test_preflight_checks_all_availability_domains_for_standard_shape() -> None:
 
     result = preflight.select_inputs(
         {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
-        {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
+        {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
         identity_factory=lambda _config: MultiAdIdentity(),
         compute_factory=lambda _config: MultiAdCompute(),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
@@ -328,7 +331,7 @@ def test_preflight_accepts_any_available_fault_domain() -> None:
 
     result = preflight.select_inputs(
         {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
-        {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
+        {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
         identity_factory=lambda _config: Identity(),
         compute_factory=lambda _config: FaultDomainCompute(),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
@@ -337,14 +340,59 @@ def test_preflight_accepts_any_available_fault_domain() -> None:
     assert result["inputs"]["preferred_vm_shape"] == preflight.E5_SHAPE
 
 
-def test_preflight_uses_runner_private_key_path(monkeypatch) -> None:
+def _private_key_pem(*, encrypted_with: bytes | None = None) -> bytes:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    encryption = (
+        serialization.BestAvailableEncryption(encrypted_with)
+        if encrypted_with
+        else serialization.NoEncryption()
+    )
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        encryption,
+    )
+
+
+def test_preflight_uses_runner_private_key_path(tmp_path, monkeypatch) -> None:
     config = {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1", "key_file": "stale"}
+    key_path = tmp_path / "private-uploaded-key.pem"
+    key_path.write_bytes(_private_key_pem())
     monkeypatch.setenv("DEPLOY_STUDIO_OCI_CONFIG", "uploaded-config")
-    monkeypatch.setenv("DEPLOY_STUDIO_OCI_KEY", "private-uploaded-key.pem")
+    monkeypatch.setenv("DEPLOY_STUDIO_OCI_KEY", str(key_path))
     monkeypatch.setattr(preflight.oci.config, "from_file", lambda path, profile: dict(config))
     monkeypatch.setattr(preflight.oci.config, "validate_config", lambda value: None)
     loaded = preflight._load_sdk_config()
-    assert loaded["key_file"] == "private-uploaded-key.pem"
+    assert loaded["key_file"] == str(key_path)
+
+
+@pytest.mark.parametrize("config_has_pass_phrase", [False, True])
+def test_preflight_rejects_encrypted_or_passphrase_config_before_oci(
+    tmp_path,
+    monkeypatch,
+    config_has_pass_phrase: bool,
+) -> None:
+    pass_phrase = b"must-not-appear"
+    key_path = tmp_path / "private-uploaded-key.pem"
+    key_path.write_bytes(
+        _private_key_pem(encrypted_with=None if config_has_pass_phrase else pass_phrase)
+    )
+    config = {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"}
+    if config_has_pass_phrase:
+        config["pass_phrase"] = pass_phrase.decode()
+    monkeypatch.setenv("DEPLOY_STUDIO_OCI_CONFIG", "uploaded-config")
+    monkeypatch.setenv("DEPLOY_STUDIO_OCI_KEY", str(key_path))
+    monkeypatch.setattr(preflight.oci.config, "from_file", lambda path, profile: dict(config))
+    monkeypatch.setattr(
+        preflight.oci.config,
+        "validate_config",
+        lambda value: pytest.fail("OCI config validation must not run after the key gate fails"),
+    )
+
+    with pytest.raises(ValueError, match="unencrypted") as error:
+        preflight._load_sdk_config()
+
+    assert pass_phrase.decode() not in str(error.value)
 
 
 def test_safe_error_message_keeps_capacity_and_oci_errors_actionable() -> None:

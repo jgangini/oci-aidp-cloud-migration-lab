@@ -58,18 +58,13 @@ output "pending_group_ocid" {
   value = oci_identity_domains_group.pending.ocid
 }
 
-output "provisioner_user_ocid" {
-  description = "OCI user OCID of the dedicated AIDP technical provisioner."
-  value       = oci_identity_domains_user.provisioner.ocid
-}
-
-output "provisioner_group_ocid" {
-  description = "OCI group OCID mapped to the AIDP_LAB_PROVISIONER role."
-  value       = oci_identity_domains_group.provisioner.ocid
+output "operator_user_ocid" {
+  description = "OCI user OCID supplied by the Deploy Studio config."
+  value       = var.operator_user_ocid
 }
 
 output "home_region" {
-  description = "Tenancy home region used for Identity API-key rotation."
+  description = "Tenancy home region used for Identity Domains operations."
   value       = var.home_region
 }
 

@@ -29,14 +29,14 @@ The Terraform tests under [`terraform/tests/`](../terraform/tests/) cover infras
 - VM bootstrapping or networking
 - OCI capacity selection and public IP handling
 - Identity Domains reconciliation
-- provisioner API-key generation, public-key registration, and signed Identity Domains requests
+- operator OCID extraction, authenticated envelope encryption, exact-object access, identity/fingerprint validation, verified object deletion, temporary-key cleanup, and signed Identity Domains requests
 - AIDP workspace/catalog/compute/folder/schema/job permissions
 - post-apply idempotency and conflict handling
 
 ## OCI-local and live acceptance
-Run `python scripts/bootstrap_local_oci_env.py --self-check`, then validate `docker/docker-compose.oci-local.yml` with the generated `.env`. The profile must mount the sanitized config and original key read-only, bind only to localhost, and report healthy only when a signed Identity Domains query plus the provisioner-key AIDP workspace/catalog/compute and exact-bucket checks pass.
+Run `python scripts/bootstrap_local_oci_env.py --self-check`, then validate `docker/docker-compose.oci-local.yml` with the generated `.env`. The profile must mount the sanitized config and original operator key read-only, bind only to localhost, and report healthy only when a signed Identity Domains query plus the operator-profile AIDP workspace/catalog/compute and exact-bucket checks pass.
 
-The release acceptance uses one real Banking participant. Require opaque folder/schema names; 20/200/320/4,000 Landing rows; four notebooks; four schemas; 15 catalog tables; `quality_issues > 0`; Bronze totals equal to Landing; Silver totals no greater than Bronze; a successful chained job; and Gold `banking_customer_value` plus `banking_branch_daily`. Run it twice and require identical counts. Promotion from pending to developers happens only after permissions complete. Use structured state and logs, not screenshots, and leave the participant active for follow-up.
+The release acceptance uses one real Banking participant. Before registration, require the operator to be a direct member of built-in `AI_DATA_PLATFORM_ADMIN`, confirm there is no `AIDP_LAB_PROVISIONER`, and prove `.bootstrap/operator-credentials.json` is absent after bootstrap. Then require opaque folder/schema names; 20/200/320/4,000 Landing rows; four notebooks; four schemas; 15 catalog tables; `quality_issues > 0`; Bronze totals equal to Landing; Silver totals no greater than Bronze; a successful chained job; and Gold `banking_customer_value` plus `banking_branch_daily`. Run it twice and require identical counts. Promotion from pending to developers happens only after permissions complete. Use structured state and logs, not screenshots, and leave the participant active for follow-up.
 
 ## Suggested validation order
 When changing multiple layers, validate in this order:

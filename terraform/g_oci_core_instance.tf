@@ -58,7 +58,7 @@ resource "oci_core_instance" "lab" {
       identity_domain_url     = local.default_domain.url
       developer_group_id      = oci_identity_domains_group.developers.id
       pending_group_id        = oci_identity_domains_group.pending.id
-      provisioner_user_ocid   = oci_identity_domains_user.provisioner.ocid
+      operator_user_ocid      = var.operator_user_ocid
       tenancy_ocid            = var.tenancy_ocid
       objectstorage_namespace = var.objectstorage_namespace
       bucket_name             = oci_objectstorage_bucket.data.name
@@ -103,7 +103,8 @@ resource "oci_identity_policy" "vm_run_command" {
   description    = "Allow the deployment operator to run commands only on the lab VM"
   statements = [
     "Allow group Administrators to manage instance-agent-command-family in compartment id ${local.target_compartment} where target.instance.id = '${oci_core_instance.lab.id}'",
-    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id"
+    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id",
+    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to manage objects in compartment id ${local.target_compartment} where all {target.bucket.name = '${oci_objectstorage_bucket.data.name}', target.object.name = '.bootstrap/operator-credentials.json'}"
   ]
 }
 

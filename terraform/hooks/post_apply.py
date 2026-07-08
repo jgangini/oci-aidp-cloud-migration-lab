@@ -8,10 +8,10 @@ import configparser
 import hashlib
 import json
 import os
-import re
 import sys
 import time
 import uuid
+from io import StringIO
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -24,14 +24,17 @@ API_VERSION = "20260430"
 CATALOG_NAME = "aidp_lab"
 DEVELOPER_ROLE_NAME = "AIDP_LAB_DEVELOPER"
 PENDING_ROLE_NAME = "AIDP_LAB_PENDING"
-PROVISIONER_ROLE_NAME = "AIDP_LAB_PROVISIONER"
 SHARED_COMPUTE_NAME = "aidp_lab_shared_compute"
+BOOTSTRAP_OBJECT_NAME = ".bootstrap/operator-credentials.json"
+BOOTSTRAP_READY = "AIDP_LAB_CREDENTIALS_READY"
 LAYERS = ("landing", "bronze", "silver", "gold")
 RESOURCE_WAIT_ATTEMPTS = 120
+POST_APPLY_BUDGET_SECONDS = 3300
+_post_apply_deadline = 0.0
 PUBLIC_KEY_SCRIPT = (
     "attempt=0; while [ \"$attempt\" -lt 120 ]; do "
-    "if [ -x /usr/local/sbin/aidp-lab-public-key ]; then "
-    "exec sudo /usr/local/sbin/aidp-lab-public-key; fi; "
+    "if [ -x /usr/local/sbin/aidp-lab-bootstrap-public-key ]; then "
+    "exec sudo /usr/local/sbin/aidp-lab-bootstrap-public-key; fi; "
     "attempt=$((attempt + 1)); sleep 5; done; exit 1"
 )
 
@@ -44,6 +47,13 @@ class ApiRequestError(ReconcileError):
     def __init__(self, method: str, path: str, status_code: int, request_id: str) -> None:
         super().__init__(f"AIDP {method} {path} failed with {status_code}; opc-request-id={request_id}")
         self.status_code = status_code
+
+
+def _sleep(seconds: float) -> None:
+    # ponytail: the hook is a single process; one process-wide deadline keeps every retry below Deploy Studio's cap.
+    if _post_apply_deadline and time.monotonic() + seconds >= _post_apply_deadline:
+        raise ReconcileError("Post-apply reconciliation reached its safe execution deadline")
+    time.sleep(seconds)
 
 
 def read_json_env(name: str) -> dict[str, Any]:
@@ -100,13 +110,13 @@ class AidpApi:
             except requests.exceptions.RequestException as exc:
                 if attempt == 4:
                     raise ReconcileError(f"AIDP {method} {path} failed after network retries") from exc
-                time.sleep(min(2**attempt, 15))
+                _sleep(min(2**attempt, 15))
                 continue
             if response.status_code not in {429, 500, 502, 503, 504} or attempt == 4:
                 return response
             retry_after = response.headers.get("retry-after")
             delay = min(30, int(retry_after)) if retry_after and retry_after.isdigit() else min(2**attempt, 15)
-            time.sleep(delay)
+            _sleep(delay)
         raise ReconcileError(f"AIDP {method} {path} exhausted retries")
 
     def request(
@@ -222,7 +232,7 @@ def ensure_resource(
             if not wait_for_active or is_active_or_raise(current, kind):
                 assert_fields(current, immutable_fields, kind)
                 return current, created
-        time.sleep(5)
+        _sleep(5)
     target = "ACTIVE state" if wait_for_active else "visibility"
     raise ReconcileError(f"Timed out waiting for {kind} {name} {target}")
 
@@ -242,7 +252,7 @@ def wait_for_existing_active(
         if current and is_active_or_raise(current, kind):
             assert_fields(current, immutable_fields, kind)
             return current
-        time.sleep(5)
+        _sleep(5)
     raise ReconcileError(f"Timed out waiting for existing {kind} {name} ACTIVE state")
 
 
@@ -284,6 +294,25 @@ def assert_role_members_exact(
         raise ReconcileError(
             f"Role {role_name} has unexpected members; remove the broader assignments before retrying"
         )
+
+
+def assert_operator_platform_admin(
+    api: AidpApi,
+    operator_user_ocid: str,
+    *,
+    attempts: int = 60,
+) -> None:
+    for attempt in range(attempts):
+        role = exact_one(
+            api.list_all("/roles", params={"displayName": "AI_DATA_PLATFORM_ADMIN"}),
+            "AI_DATA_PLATFORM_ADMIN",
+            "role",
+        )
+        if role and role_has_member(api, str(role.get("key") or ""), "USER", operator_user_ocid):
+            return
+        if attempt + 1 < attempts:
+            _sleep(5)
+    raise ReconcileError("OCI deployment operator is not an AI_DATA_PLATFORM_ADMIN member")
 
 
 def permission_is_assigned(
@@ -357,27 +386,63 @@ def ensure_action(
     for _ in range(attempts):
         if is_applied():
             return True
-        time.sleep(5)
+        _sleep(5)
     raise ReconcileError(f"AIDP action {action_path} did not converge to the requested values")
 
 
 def load_oci_config(config_path: str, key_path: str) -> dict[str, Any]:
     import oci
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
-    parser = configparser.ConfigParser()
-    if not parser.read(config_path, encoding="utf-8") or "DEFAULT" not in parser:
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    try:
+        loaded = parser.read(config_path, encoding="utf-8")
+    except (OSError, configparser.Error) as exc:
+        raise ReconcileError("OCI config could not be parsed") from exc
+    if not loaded or not parser.defaults():
         raise ReconcileError("OCI config is missing the DEFAULT profile")
     config = dict(parser["DEFAULT"])
+    if config.get("pass_phrase"):
+        raise ReconcileError("OCI API private key must be an unencrypted RSA PEM")
     config["key_file"] = key_path
     required = ("tenancy", "user", "fingerprint")
     missing = [name for name in required if not config.get(name)]
     if missing:
         raise ReconcileError(f"OCI config is missing required fields: {', '.join(missing)}")
     try:
+        private_key = serialization.load_pem_private_key(Path(key_path).read_bytes(), password=None)
+    except (OSError, ValueError, TypeError) as exc:
+        raise ReconcileError("OCI API private key must be an unencrypted RSA PEM") from exc
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise ReconcileError("OCI API private key must be an unencrypted RSA PEM")
+    actual_fingerprint = hashlib.md5(
+        private_key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ),
+        usedforsecurity=False,
+    ).hexdigest()
+    configured_fingerprint = str(config["fingerprint"]).replace(":", "").lower()
+    if configured_fingerprint != actual_fingerprint:
+        raise ReconcileError("OCI API private key does not match the configured fingerprint")
+    try:
         oci.config.validate_config(config)
     except Exception as exc:
         raise ReconcileError("OCI config could not be validated with the supplied private key") from exc
     return config
+
+
+def render_runtime_oci_config(config: dict[str, Any]) -> str:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser["DEFAULT"] = {
+        name: str(config[name])
+        for name in ("tenancy", "user", "fingerprint", "region")
+    }
+    parser["DEFAULT"]["key_file"] = "/etc/aidp-lab/oci/key.pem"
+    rendered = StringIO()
+    parser.write(rendered, space_around_delimiters=False)
+    return rendered.getvalue()
 
 
 def build_signer(config: dict[str, Any]) -> Any:
@@ -563,43 +628,49 @@ def assert_fresh_catalog(
     return len(global_schemas), len(external)
 
 
-def parse_public_key_output(text: str) -> tuple[str, str]:
+def parse_public_key_output(text: str) -> str:
+    if text.strip() == BOOTSTRAP_READY:
+        return BOOTSTRAP_READY
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    fingerprints = [line.split("=", 1)[1] for line in lines if line.startswith("FINGERPRINT=")]
-    public_lines = [line for line in lines if not line.startswith("FINGERPRINT=")]
-    if len(fingerprints) != 1:
-        raise ReconcileError("Run Command returned an invalid public-key response")
-    public_key = "\n".join(public_lines) + "\n"
+    public_key = "\n".join(lines) + "\n"
     if "PRIVATE KEY" in public_key or not public_key.startswith("-----BEGIN PUBLIC KEY-----"):
         raise ReconcileError("Run Command did not return a public-only PEM")
     if not public_key.rstrip().endswith("-----END PUBLIC KEY-----"):
         raise ReconcileError("Run Command returned an incomplete public key")
-    fingerprint = fingerprints[0].lower()
-    if not re.fullmatch(r"(?:[0-9a-f]{2}:){15}[0-9a-f]{2}", fingerprint):
-        raise ReconcileError("Run Command returned an invalid API-key fingerprint")
-    return public_key, fingerprint
+    return public_key
 
 
-def fetch_provisioner_public_key(
+def fetch_bootstrap_public_key(
     client: Any,
     oci_module: Any,
     compartment_id: str,
     instance_id: str,
     *,
-    attempts: int = 420,
-) -> tuple[str, str]:
+    attempts: int = 150,
+    create_attempts: int = 60,
+) -> str:
     models = oci_module.compute_instance_agent.models
     details = models.CreateInstanceAgentCommandDetails(
         compartment_id=compartment_id,
         execution_time_out_in_seconds=660,
-        display_name="aidp-lab-provisioner-public-key",
+        display_name="aidp-lab-bootstrap-public-key",
         target=models.InstanceAgentCommandTarget(instance_id=instance_id),
         content=models.InstanceAgentCommandContent(
             source=models.InstanceAgentCommandSourceViaTextDetails(text=PUBLIC_KEY_SCRIPT),
             output=models.InstanceAgentCommandOutputViaTextDetails(),
         ),
     )
-    command = client.create_instance_agent_command(details).data
+    command = None
+    for attempt in range(create_attempts):
+        try:
+            command = client.create_instance_agent_command(details).data
+            break
+        except oci_module.exceptions.ServiceError as exc:
+            if exc.status not in {403, 404, 409, 429, 500, 502, 503, 504} or attempt + 1 == create_attempts:
+                raise ReconcileError(f"Compute Run Command submission failed with OCI {exc.status}") from exc
+            _sleep(5)
+    if command is None:
+        raise ReconcileError("Compute Run Command submission did not complete")
     command_id = str(getattr(command, "id", "") or "")
     if not command_id:
         raise ReconcileError("Compute Run Command did not return a command OCID")
@@ -609,57 +680,58 @@ def fetch_provisioner_public_key(
             execution = client.get_instance_agent_command_execution(command_id, instance_id).data
         except oci_module.exceptions.ServiceError as exc:
             if exc.status == 404:
-                time.sleep(5)
+                _sleep(5)
                 continue
-            raise
+            raise ReconcileError(f"Compute Run Command status failed with OCI {exc.status}") from exc
         state = str(getattr(execution, "lifecycle_state", "") or "").upper()
         if state == "SUCCEEDED":
             content = getattr(execution, "content", None)
             return parse_public_key_output(str(getattr(content, "text", "") or ""))
         if state in terminal:
             raise ReconcileError(f"Compute Run Command failed with state {state}")
-        time.sleep(5)
-    raise ReconcileError("Timed out waiting for the provisioner public key Run Command")
+        _sleep(5)
+    raise ReconcileError("Timed out waiting for the VM bootstrap state Run Command")
 
 
-def rotate_provisioner_api_key(
-    identity_client: Any,
-    oci_module: Any,
-    user_ocid: str,
-    public_key: str,
-    expected_fingerprint: str,
-    *,
-    attempts: int = 12,
-) -> str:
-    existing = oci_module.pagination.list_call_get_all_results(
-        identity_client.list_api_keys, user_ocid
-    ).data
-    for item in existing:
-        fingerprint = str(getattr(item, "fingerprint", "") or "")
-        if fingerprint:
-            identity_client.delete_api_key(user_ocid, fingerprint)
-    uploaded = identity_client.upload_api_key(
-        user_ocid,
-        oci_module.identity.models.CreateApiKeyDetails(key=public_key),
-    ).data
-    uploaded_fingerprint = str(getattr(uploaded, "fingerprint", "") or "").lower()
-    if uploaded_fingerprint != expected_fingerprint:
-        raise ReconcileError("OCI returned a fingerprint that does not match the VM public key")
-    for _ in range(attempts):
-        current = oci_module.pagination.list_call_get_all_results(
-            identity_client.list_api_keys, user_ocid
-        ).data
-        fingerprints = {
-            str(getattr(item, "fingerprint", "") or "").lower() for item in current
-        }
-        if fingerprints == {expected_fingerprint}:
-            return expected_fingerprint
-        time.sleep(5)
-    raise ReconcileError("Provisioner API-key rotation did not converge to exactly one key")
+def encrypt_bootstrap_credentials(public_key: str, config_text: str, key_text: str) -> bytes:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    try:
+        recipient = serialization.load_pem_public_key(public_key.encode("ascii"))
+    except (UnicodeEncodeError, ValueError, TypeError) as exc:
+        raise ReconcileError("VM bootstrap public key is invalid") from exc
+    if not isinstance(recipient, rsa.RSAPublicKey):
+        raise ReconcileError("VM bootstrap public key must be RSA")
+    data_key = AESGCM.generate_key(bit_length=256)
+    nonce = os.urandom(12)
+    plaintext = json.dumps(
+        {"config_text": config_text, "key_text": key_text},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    ciphertext = AESGCM(data_key).encrypt(nonce, plaintext, None)
+    wrapped_key = recipient.encrypt(
+        data_key,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+    envelope = {
+        "schema_version": 1,
+        "wrapped_key_b64": base64.b64encode(wrapped_key).decode("ascii"),
+        "nonce_b64": base64.b64encode(nonce).decode("ascii"),
+        "ciphertext_b64": base64.b64encode(ciphertext).decode("ascii"),
+    }
+    return (json.dumps(envelope, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     events: list[str] = []
+    assert_operator_platform_admin(api, str(outputs["operator_user_ocid"]))
+    events.append("Deployment operator AI_DATA_PLATFORM_ADMIN membership verified")
     workspace_name = str(outputs["default_workspace_name"])
     workspace = wait_for_existing_active(
         api,
@@ -738,11 +810,6 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
             "AIDP lab pending participant",
             str(outputs["pending_group_ocid"]),
         ),
-        (
-            PROVISIONER_ROLE_NAME,
-            "AIDP lab technical provisioner",
-            str(outputs["provisioner_group_ocid"]),
-        ),
     )
     role_keys: dict[str, str] = {}
     for role_name, description, group_ocid in role_specs:
@@ -755,7 +822,7 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
             f"group {'added' if member_added else 'already assigned'}"
         )
 
-    for role_name in (DEVELOPER_ROLE_NAME, PENDING_ROLE_NAME, PROVISIONER_ROLE_NAME):
+    for role_name in (DEVELOPER_ROLE_NAME, PENDING_ROLE_NAME):
         ensure_role_permission(
             api,
             f"/workspaces/{workspace_key}",
@@ -763,32 +830,19 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
             role_name,
             "USER",
         )
-    for role_name, permission in (
-        (DEVELOPER_ROLE_NAME, "SELECT"),
-        (PROVISIONER_ROLE_NAME, "ADMIN"),
-    ):
-        ensure_role_permission(
-            api,
-            f"/catalogs/{catalog_key}",
-            "assignCatalogPermissionDetails",
-            role_name,
-            permission,
-        )
-    for role_name in (DEVELOPER_ROLE_NAME, PROVISIONER_ROLE_NAME):
-        ensure_role_permission(
-            api,
-            f"/workspaces/{workspace_key}/clusters/{compute_key}",
-            "assignClusterPermissionDetails",
-            role_name,
-            "USE",
-        )
     ensure_role_permission(
         api,
-        f"/workspaces/{workspace_key}/objects/{root_object_key}",
-        "assignWorkspaceObjectPermissionDetails",
-        PROVISIONER_ROLE_NAME,
-        "ADMIN",
-        inheritable=True,
+        f"/catalogs/{catalog_key}",
+        "assignCatalogPermissionDetails",
+        DEVELOPER_ROLE_NAME,
+        "SELECT",
+    )
+    ensure_role_permission(
+        api,
+        f"/workspaces/{workspace_key}/clusters/{compute_key}",
+        "assignClusterPermissionDetails",
+        DEVELOPER_ROLE_NAME,
+        "USE",
     )
     expected_permissions = {
         DEVELOPER_ROLE_NAME: {
@@ -799,12 +853,6 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
         PENDING_ROLE_NAME: {
             ("WORKSPACE", workspace_key, frozenset({"USER"})),
         },
-        PROVISIONER_ROLE_NAME: {
-            ("WORKSPACE", workspace_key, frozenset({"USER"})),
-            ("CATALOG", catalog_key, frozenset({"ADMIN"})),
-            ("CLUSTER", compute_key, frozenset({"USE"})),
-            ("FOLDER", root_object_key, frozenset({"ADMIN"})),
-        },
     }
     for role_name, _, group_ocid in role_specs:
         assert_role_members_exact(
@@ -813,7 +861,7 @@ def reconcile(api: AidpApi, outputs: dict[str, Any]) -> tuple[dict[str, Any], li
         assert_role_permissions_exact(
             api, role_keys[role_name], role_name, expected_permissions[role_name]
         )
-    events.append("AIDP developer, pending, and provisioner RBAC verified")
+    events.append("AIDP developer and pending RBAC verified; operator retains platform administration")
 
     return (
         {
@@ -857,7 +905,7 @@ def wait_for_application(application_url: str, *, attempts: int = 60) -> None:
                 return
         except (requests.exceptions.RequestException, ValueError):
             pass
-        time.sleep(5)
+        _sleep(5)
     raise ReconcileError("Registration application did not become healthy over HTTPS")
 
 
@@ -878,34 +926,78 @@ def resolve_workbench_url(outputs: dict[str, Any], config: dict[str, Any], signe
         return ""
 
 
-def register_provisioner_api_key(
+def deliver_operator_credentials(
     oci_module: Any,
     config: dict[str, Any],
     signer: Any,
     outputs: dict[str, Any],
     region: str,
-) -> str:
+    object_storage: Any,
+    config_text: str,
+    key_text: str,
+) -> bool:
+    if str(outputs["operator_user_ocid"]) != str(config.get("user") or ""):
+        raise ReconcileError("Terraform operator_user_ocid does not match the uploaded OCI config")
     run_config = {**config, "region": region}
     run_client = oci_module.compute_instance_agent.ComputeInstanceAgentClient(
         run_config, signer=signer
     )
-    public_key, fingerprint = fetch_provisioner_public_key(
+    public_key = fetch_bootstrap_public_key(
         run_client,
         oci_module,
         str(outputs["compartment_ocid"]),
         str(outputs["instance_id"]),
     )
-    identity_config = {**config, "region": str(outputs["home_region"])}
-    identity_client = oci_module.identity.IdentityClient(
-        identity_config, signer=signer
-    )
-    return rotate_provisioner_api_key(
-        identity_client,
-        oci_module,
-        str(outputs["provisioner_user_ocid"]),
-        public_key,
-        fingerprint,
-    )
+    if public_key == BOOTSTRAP_READY:
+        delete_bootstrap_object(oci_module, object_storage, outputs)
+        return False
+    envelope = encrypt_bootstrap_credentials(public_key, config_text, key_text)
+    try:
+        object_storage.put_object(
+            str(outputs["objectstorage_namespace"]),
+            str(outputs["bucket_name"]),
+            BOOTSTRAP_OBJECT_NAME,
+            envelope,
+            content_type="application/json",
+            if_none_match="*",
+        )
+    except oci_module.exceptions.ServiceError as exc:
+        raise ReconcileError(f"Encrypted VM credential delivery failed with OCI {exc.status}") from exc
+    return True
+
+
+def delete_bootstrap_object(oci_module: Any, object_storage: Any, outputs: dict[str, Any]) -> None:
+    try:
+        object_storage.delete_object(
+            str(outputs["objectstorage_namespace"]),
+            str(outputs["bucket_name"]),
+            BOOTSTRAP_OBJECT_NAME,
+        )
+    except oci_module.exceptions.ServiceError as exc:
+        if exc.status != 404:
+            raise ReconcileError(f"Encrypted VM credential cleanup failed with OCI {exc.status}") from exc
+
+
+def wait_for_bootstrap_consumed(
+    oci_module: Any,
+    object_storage: Any,
+    outputs: dict[str, Any],
+    *,
+    attempts: int = 120,
+) -> None:
+    for _ in range(attempts):
+        try:
+            object_storage.head_object(
+                str(outputs["objectstorage_namespace"]),
+                str(outputs["bucket_name"]),
+                BOOTSTRAP_OBJECT_NAME,
+            )
+        except oci_module.exceptions.ServiceError as exc:
+            if exc.status == 404:
+                return
+            raise ReconcileError(f"Encrypted VM credential status failed with OCI {exc.status}") from exc
+        _sleep(5)
+    raise ReconcileError("Timed out waiting for the VM to consume encrypted OCI credentials")
 
 
 def build_success_result(
@@ -933,7 +1025,7 @@ def build_success_result(
             "aidp_shared_compute_name": str(
                 reconciled.get("shared_compute_name") or SHARED_COMPUTE_NAME
             ),
-            "aidp_provisioner_ready": bool(reconciled.get("provisioner_ready")),
+            "aidp_runtime_ready": bool(reconciled.get("runtime_ready")),
             "aidp_external_volume_count": int(
                 reconciled.get("external_volume_count") or 0
             ),
@@ -942,10 +1034,13 @@ def build_success_result(
 
 
 def main() -> int:
+    global _post_apply_deadline
     output_path = os.environ.get("DEPLOY_STUDIO_OUTPUT")
     if not output_path:
         print("DEPLOY_STUDIO_OUTPUT is required", file=sys.stderr)
         return 2
+    _post_apply_deadline = time.monotonic() + POST_APPLY_BUDGET_SECONDS
+    bootstrap_uploaded = False
     try:
         context = read_json_env("DEPLOY_STUDIO_CONTEXT")
         read_json_env("DEPLOY_STUDIO_SECRETS")  # Validate the complete hook contract; values are intentionally unused.
@@ -960,25 +1055,42 @@ def main() -> int:
         messages = ensure_object_prefixes(
             object_storage, str(outputs["objectstorage_namespace"]), str(outputs["bucket_name"])
         )
-        fingerprint = register_provisioner_api_key(
-            oci, oci_config, signer, outputs, str(context["region"])
-        )
-        messages.append(
-            f"Provisioner API key rotated and verified: {fingerprint}"
-        )
         api = AidpApi(context["region"], outputs["ai_data_platform_id"], signer, context["deployment_id"])
         reconciled, reconcile_messages = reconcile(api, outputs)
         messages.extend(reconcile_messages)
-        reconciled["provisioner_ready"] = True
-        reconciled["provisioner_api_key_fingerprint"] = fingerprint
         aidp_url = resolve_workbench_url(outputs, oci_config, signer)
         if not aidp_url:
             raise ReconcileError("AIDP Workbench direct URL is not published yet")
+        bootstrap_uploaded = deliver_operator_credentials(
+            oci,
+            oci_config,
+            signer,
+            outputs,
+            str(context["region"]),
+            object_storage,
+            render_runtime_oci_config(oci_config),
+            Path(key_path).read_text(encoding="utf-8"),
+        )
+        if bootstrap_uploaded:
+            messages.append("Encrypted operator OCI credentials delivered for one-use VM bootstrap")
+            wait_for_bootstrap_consumed(oci, object_storage, outputs)
+            bootstrap_uploaded = False
+            messages.append("Registration VM consumed and deleted the encrypted bootstrap object")
+        else:
+            messages.append("Registration VM already has the validated operator OCI profile")
         wait_for_application(str(outputs["application_url"]))
         messages.append("Registration application is healthy over HTTPS")
+        reconciled["runtime_ready"] = True
         write_result(output_path, build_success_result(context, reconciled, messages, aidp_url))
         return 0
     except (KeyError, OSError, ValueError, ReconcileError) as exc:
+        if bootstrap_uploaded:
+            try:
+                delete_bootstrap_object(oci, object_storage, outputs)
+            except Exception as cleanup_exc:
+                exc = ReconcileError(
+                    f"{exc}; encrypted bootstrap cleanup failed: {type(cleanup_exc).__name__}"
+                )
         write_result(output_path, {"events": [{"level": "error", "message": str(exc)}], "artifacts": [], "outputs": {}})
         return 1
 

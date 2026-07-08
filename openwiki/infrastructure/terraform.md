@@ -6,7 +6,7 @@ The Terraform package in [`terraform/`](../terraform/) is the deployment backbon
 Based on the root README and the Terraform file structure, the package manages:
 - the OCI network and compute instance used as the registration VM
 - the private `aidp-data-<suffix>` bucket used by the Oracle-managed Object Storage data plane
-- tenancy-level Identity Domains groups, the API-only provisioner user, its data app-role grant, and scoped IAM policies
+- tenancy-level pending/developer Identity Domains groups and scoped IAM policies; no dedicated provisioner identity or role
 - the Oracle AI Data Platform resource and its associated workspace/catalog setup
 - outputs needed by Deploy Studio and the post-apply workflow
 
@@ -26,7 +26,7 @@ The current Terraform files are intentionally split by major resource group:
 
 ## Important operational behavior
 ### Preflight
-The README says Deploy Studio preflight discovers the tenancy home region and checks compute capacity for the target shape before the apply proceeds. That means the deployment chooses the shape based on capacity report results rather than hard-coding a blind instance create.
+The README says Deploy Studio preflight discovers the tenancy home region and operator user OCID, then checks compute capacity for the target shape before the apply proceeds. The non-secret OCID reaches Terraform; the uploaded config and key remain private hook inputs until one-use delivery. The deployment chooses the shape based on capacity report results rather than hard-coding a blind instance create.
 
 ### Post-apply
 `terraform/hooks/post_apply.py` is responsible for reconciling missing AIDP resources after apply. The current repo guidance and tests indicate it:
@@ -34,23 +34,24 @@ The README says Deploy Studio preflight discovers the tenancy home region and ch
 - can add missing resources
 - must not delete or replace mismatched live resources
 - authorizes catalog reconciliation and waits for asynchronous resources
-- aligns the workspace, catalog, shared compute, `/Workspace/lab-users` root, and pending/developer/provisioner RBAC
+- verifies the operator's direct built-in `AI_DATA_PLATFORM_ADMIN` membership and aligns the workspace, catalog, shared compute, `/Workspace/lab-users` root, and pending/developer RBAC
 
-Participant provisioning uses external tables over OCI URIs in the one lab bucket. It does not create external AIDP volumes or an explicit OSCS/OpenSearch resource. Developer and provisioner IAM may `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket; AIDP-internal permissions remain the primary authorization layer.
+Participant provisioning uses external tables over OCI URIs in the one lab bucket. It does not create external AIDP volumes or an explicit OSCS/OpenSearch resource. Developer IAM may `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket; the operator keeps the administrative identity used to create AIDP, and AIDP-internal permissions remain the primary authorization layer.
 
-The bucket intentionally omits `kms_key_id`, so OCI encrypts it with an Oracle-managed key. Release v1.0.0 creates no Vault, KMS key, secret, or OAuth application. Post-apply registers only the VM-generated provisioner public key; the private key remains on the VM and runtime requests are signed through `OCI_CONFIG_FILE`.
+The bucket intentionally omits `kms_key_id`, so OCI encrypts it with an Oracle-managed key. Release v1.0.0 creates no Vault, KMS key, secret, OAuth application, dedicated provisioner, or additional API key. The VM creates a temporary RSA 3072-bit bootstrap key. Post-apply encrypts the exact operator config/key with AES-256-GCM, wraps the data key with RSA-OAEP/SHA-256, and uploads the envelope to `.bootstrap/operator-credentials.json`. The VM validates the operator OCID and fingerprint, installs the profile atomically with mode `0600`, deletes and verifies removal of the object, and removes the temporary RSA key before runtime readiness.
 
 ### Safety contracts
 The top-level README also documents these important constraints:
 - the data bucket is intentionally not auto-deleted when non-empty
 - tenancy-scoped Identity Domains resources use a provider alias pinned to the home region
-- Deploy Studio operator credentials are not copied to the VM; runtime provisioning uses a separate least-privilege API key and does not fall back to OAuth or an instance principal
+- Deploy Studio operator credentials are intentionally installed in the root-only VM runtime directory only after authenticated decryption and exact identity/fingerprint validation; they never enter Terraform variables/state, metadata, artifacts, or logs
+- the instance principal can manage only the exact one-use bootstrap object and is never a runtime authentication fallback
 
 ## What to watch when editing
 - Keep `terraform/deploy-studio.json` and the Terraform schema compatible with Deploy Studio v1.
 - Preserve the single-bucket medallion contract.
 - Treat OCI provider and resource behavior changes as backwards-compatibility risks; they have been the subject of multiple recent fixes.
-- Be careful with Identity Domains signing and API-key rotation: only the public key may leave the VM, while `.env` stores identifiers and the `OCI_CONFIG_FILE` path rather than private-key material.
+- Be careful with the exact-object bootstrap policy, envelope encryption, fingerprint validation, verified object deletion, and temporary-key cleanup. `.env` stores identifiers and the `OCI_CONFIG_FILE` path rather than private-key material.
 
 ## Tests and checks
 The README calls out the main validation sequence:

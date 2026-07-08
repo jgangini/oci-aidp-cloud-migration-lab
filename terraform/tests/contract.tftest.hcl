@@ -28,17 +28,6 @@ override_data {
 }
 
 override_data {
-  target = data.oci_identity_domains_app_roles.user_administrator
-  values = {
-    app_roles = [{
-      id           = "user-admin-role"
-      display_name = "User Administrator"
-      app          = [{ value = "identity-service-app" }]
-    }]
-  }
-}
-
-override_data {
   target = data.oci_identity_availability_domains.lab
   values = { availability_domains = [{ name = "AD-1" }] }
 }
@@ -69,6 +58,7 @@ run "resolved_compartment_contract" {
   variables {
     tenancy_ocid            = "ocid1.tenancy.oc1..test"
     home_region             = "us-ashburn-1"
+    operator_user_ocid      = "ocid1.user.oc1..operator"
     compartment_ocid        = "ocid1.compartment.oc1..test"
     objectstorage_namespace = "testnamespace"
     deployment_suffix       = "test1234"
@@ -169,8 +159,13 @@ run "resolved_compartment_contract" {
   }
 
   assert {
-    condition     = length(oci_identity_policy.vm_run_command.statements) == 2
-    error_message = "The deployment operator needs scoped command submission access to retrieve the public key."
+    condition = length(oci_identity_policy.vm_run_command.statements) == 3 && anytrue([
+      for statement in oci_identity_policy.vm_run_command.statements :
+      strcontains(statement, "manage objects") &&
+      strcontains(statement, "target.bucket.name = 'aidp-data-test1234'") &&
+      strcontains(statement, "target.object.name = '.bootstrap/operator-credentials.json'")
+    ])
+    error_message = "The registration VM needs exact-object access to consume encrypted credentials."
   }
 
   assert {
@@ -179,53 +174,8 @@ run "resolved_compartment_contract" {
   }
 
   assert {
-    condition = (
-      oci_identity_domains_user.provisioner.user_type == "Service" &&
-      oci_identity_domains_user.provisioner.active &&
-      length(oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user) == 1 &&
-      oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_api_keys &&
-      !oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_console &&
-      !oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_console_password &&
-      length(oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensionuser_user) == 1 &&
-      oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensionuser_user[0].bypass_notification
-    )
-    error_message = "The technical provisioner must be API-only and non-interactive."
-  }
-
-  assert {
-    condition = (
-      oci_identity_domains_group.provisioner.display_name == "aidp-lab-provisioner-test1234" &&
-      length(oci_identity_domains_group.provisioner.members) == 1 &&
-      alltrue([
-        for member in oci_identity_domains_group.provisioner.members :
-        member.type == "User"
-      ])
-    )
-    error_message = "The dedicated provisioner group must contain exactly the technical user."
-  }
-
-  assert {
-    condition = (
-      oci_identity_domains_grant.provisioner_user_admin.grant_mechanism == "ADMINISTRATOR_TO_USER" &&
-      length(oci_identity_domains_grant.provisioner_user_admin.grantee) == 1 &&
-      oci_identity_domains_grant.provisioner_user_admin.grantee[0].type == "User"
-    )
-    error_message = "The API-key provisioner must receive User Administrator directly, without an OAuth app."
-  }
-
-  assert {
-    condition = (
-      length(oci_identity_policy.provisioner_runtime.statements) == 3 &&
-      anytrue([
-        for statement in oci_identity_policy.provisioner_runtime.statements :
-        strcontains(statement, "use ai-data-platforms")
-      ]) &&
-      alltrue([
-        for statement in oci_identity_policy.provisioner_runtime.statements :
-        !strcontains(statement, "objects") || strcontains(statement, "target.bucket.name = 'aidp-data-test1234'")
-      ])
-    )
-    error_message = "Provisioner IAM must be limited to AIDP use and the exact lab bucket."
+    condition     = output.operator_user_ocid == "ocid1.user.oc1..operator"
+    error_message = "The deployment contract must preserve the Deploy Studio operator OCID."
   }
 }
 
@@ -235,6 +185,7 @@ run "explicit_e4_retry_contract" {
   variables {
     tenancy_ocid            = "ocid1.tenancy.oc1..test"
     home_region             = "us-ashburn-1"
+    operator_user_ocid      = "ocid1.user.oc1..operator"
     compartment_ocid        = "ocid1.compartment.oc1..test"
     objectstorage_namespace = "testnamespace"
     deployment_suffix       = "test1234"
@@ -256,6 +207,7 @@ run "authorized_e3_fallback_contract" {
   variables {
     tenancy_ocid            = "ocid1.tenancy.oc1..test"
     home_region             = "us-ashburn-1"
+    operator_user_ocid      = "ocid1.user.oc1..operator"
     compartment_ocid        = "ocid1.compartment.oc1..test"
     objectstorage_namespace = "testnamespace"
     deployment_suffix       = "test1234"

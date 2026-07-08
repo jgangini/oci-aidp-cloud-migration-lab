@@ -40,11 +40,16 @@ def _source(tmp_path: Path) -> Path:
     return root
 
 
-def _plan(*, actions: list[str] | None = None, resource_type: str = "oci_core_instance") -> dict[str, object]:
+def _plan(
+    *,
+    actions: list[str] | None = None,
+    resource_type: str = "oci_core_instance",
+    address: str | None = None,
+) -> dict[str, object]:
     return {
         "resource_changes": [
             {
-                "address": "oci_core_instance.lab",
+                "address": address or f"{resource_type}.lab",
                 "mode": "managed",
                 "type": resource_type,
                 "change": {"actions": actions or ["create"], "after": {"display_name": "aidp-lab"}},
@@ -114,6 +119,10 @@ def test_context_rejects_untrusted_repository_and_short_sha() -> None:
         ('payload = { volumeType = "EXTERNAL" }', "external AIDP volume"),
         ('resource "oci_kms_vault" "bad" {}', "OCI Vault"),
         ('resource "oci_identity_domains_app" "bad" {}', "OAuth client"),
+        ('resource "oci_identity_domains_user" "operator_copy" {}', "technical Identity Domains user"),
+        ('resource "oci_identity_domains_group" "provisioner" {}', "technical Identity Domains group"),
+        ('resource "oci_identity_domains_grant" "user_admin" {}', "technical Identity Domains grant"),
+        ('value = "AIDP_LAB_PROVISIONER"', "AIDP_LAB_PROVISIONER"),
         ('statement = "Allow any-user to manage vnics in tenancy"', "VNIC"),
         ('statement = "Allow any-user to use subnets in tenancy"', "subnet"),
         ('statement = "Allow any-user to use network-security-groups in tenancy"', "NSG"),
@@ -143,6 +152,21 @@ def test_source_accepts_minimal_safe_deployment(tmp_path: Path) -> None:
     release_gate.validate_source(_source(tmp_path))
 
 
+def test_source_accepts_developer_pending_groups_and_ignores_docs(tmp_path: Path) -> None:
+    root = _source(tmp_path)
+    (root / "h_oci_identity.tf").write_text(
+        '\n'.join(
+            (
+                'resource "oci_identity_domains_group" "developers" {}',
+                'resource "oci_identity_domains_group" "pending" {}',
+            )
+        ),
+        encoding="utf-8",
+    )
+    (root / "README.md").write_text("The deployment must not create AIDP_LAB_PROVISIONER.", encoding="utf-8")
+    release_gate.validate_source(root)
+
+
 def test_plan_accepts_only_create_actions() -> None:
     release_gate.validate_plan(_plan())
     for actions in (["no-op"], ["update"], ["delete"], ["create", "delete"]):
@@ -165,6 +189,28 @@ def test_plan_rejects_forbidden_resource_and_customer_managed_bucket_key() -> No
     bucket_plan["resource_changes"][0]["change"]["after"]["kms_key_id"] = "ocid1.key.oc1..test"  # type: ignore[index]
     with pytest.raises(ValueError, match="customer-managed"):
         release_gate.validate_plan(bucket_plan)
+
+
+def test_plan_rejects_technical_identity_resources_but_allows_lab_groups() -> None:
+    for resource_type, address, message in (
+        ("oci_identity_domains_user", "oci_identity_domains_user.operator_copy", "technical Identity Domains user"),
+        ("oci_identity_domains_group", "oci_identity_domains_group.provisioner", "technical Identity Domains group"),
+        ("oci_identity_domains_grant", "oci_identity_domains_grant.user_admin", "technical Identity Domains grant"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            release_gate.validate_plan(_plan(resource_type=resource_type, address=address))
+
+    for name in ("developers", "pending"):
+        release_gate.validate_plan(
+            _plan(resource_type="oci_identity_domains_group", address=f"oci_identity_domains_group.{name}")
+        )
+
+
+def test_plan_rejects_aidp_lab_provisioner_literal() -> None:
+    plan = _plan()
+    plan["resource_changes"][0]["change"]["after"]["display_name"] = "AIDP_LAB_PROVISIONER"  # type: ignore[index]
+    with pytest.raises(ValueError, match="AIDP_LAB_PROVISIONER"):
+        release_gate.validate_plan(plan)
 
 
 def test_plan_accepts_provider_computed_bucket_key_when_hcl_does_not_assign_one() -> None:

@@ -18,6 +18,11 @@ EXPECTED_REGION = "us-chicago-1"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _COMPARTMENT_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_ALLOWED_IDENTITY_DOMAIN_GROUPS = frozenset({"developers", "pending"})
+_IDENTITY_DOMAIN_RESOURCE = re.compile(
+    r'resource\s+"oci_identity_domains_(user|group|grant)"\s+"([^"]+)"',
+    re.IGNORECASE,
+)
 _SOURCE_PATTERNS = (
     ("lab-2/lab-3 reference", re.compile(r"oci-aidp-cloud-migration-lab-(?:2|3)(?![0-9])", re.IGNORECASE)),
     (
@@ -53,6 +58,7 @@ _SOURCE_PATTERNS = (
             re.IGNORECASE,
         ),
     ),
+    ("AIDP_LAB_PROVISIONER literal", re.compile(r"\bAIDP_LAB_PROVISIONER\b", re.IGNORECASE)),
 )
 
 
@@ -98,8 +104,21 @@ def _deployment_files(terraform_root: Path) -> list[Path]:
     return sorted(path for path in files if path.is_file())
 
 
+def _technical_identity_finding(resource_kind: str, resource_name: str) -> str | None:
+    if resource_kind.lower() == "group" and resource_name.lower() in _ALLOWED_IDENTITY_DOMAIN_GROUPS:
+        return None
+    return f"technical Identity Domains {resource_kind.lower()}"
+
+
 def _forbidden_finding(text: str) -> str | None:
-    return next((label for label, pattern in _SOURCE_PATTERNS if pattern.search(text)), None)
+    finding = next((label for label, pattern in _SOURCE_PATTERNS if pattern.search(text)), None)
+    if finding:
+        return finding
+    for kind, name in _IDENTITY_DOMAIN_RESOURCE.findall(text):
+        finding = _technical_identity_finding(kind, name)
+        if finding:
+            return finding
+    return None
 
 
 def validate_source(terraform_root: Path) -> None:
@@ -134,13 +153,18 @@ def _planned_values(resource: dict[str, Any]) -> dict[str, Any]:
     return after if isinstance(after, dict) else {}
 
 
-def _forbidden_plan_type(resource_type: str) -> str | None:
+def _forbidden_plan_type(resource_type: str, address: str) -> str | None:
     if resource_type.startswith(("oci_kms_", "oci_vault_")):
         return "OCI Vault or customer-managed KMS resource"
     if resource_type == "oci_identity_domains_app":
         return "Identity Domains OAuth client"
     if "ai_data_platform" in resource_type and "volume" in resource_type:
         return "external AIDP volume"
+    identity_prefix = "oci_identity_domains_"
+    identity_kind = resource_type.removeprefix(identity_prefix)
+    if resource_type.startswith(identity_prefix) and identity_kind in {"user", "group", "grant"}:
+        resource_name = address.rsplit(".", 1)[-1].split("[", 1)[0]
+        return _technical_identity_finding(identity_kind, resource_name)
     return None
 
 
@@ -158,7 +182,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
         if finding:
             raise ValueError(f"release plan contains {finding} in {address}")
         resource_type = str(resource.get("type") or "").lower()
-        forbidden_type = _forbidden_plan_type(resource_type)
+        forbidden_type = _forbidden_plan_type(resource_type, address)
         if forbidden_type:
             raise ValueError(f"release plan contains {forbidden_type} in {address}")
         if resource_type == "oci_objectstorage_bucket" and _has_nonempty_key(_planned_values(resource), "kms_key_id"):

@@ -6,7 +6,7 @@ Release v1.0.0 keeps one private `aidp-data-<suffix>` bucket with `01_landing/`,
 
 The immutable industry and reconciliation phase live in `/Workspace/lab-users/.control/<participant>.json`, outside each participant's `ADMIN` subtree. The visible `lab-manifest.json` is tutorial metadata only; neither it nor the student-writable bucket controls authorization, overwrite behavior, or cleanup scope.
 
-The data bucket uses the default Oracle-managed encryption key. The lab creates no OCI Vault, KMS key, or OAuth client: Identity Domains requests are signed with the dedicated provisioner's API key, whose private key remains on the VM.
+The data bucket uses the default Oracle-managed encryption key. The lab creates no OCI Vault, KMS key, OAuth client, dedicated provisioner identity, or additional OCI API key. Identity Domains and AIDP requests use the same operator profile uploaded to Deploy Studio.
 
 ## Participant data kits
 
@@ -29,21 +29,22 @@ The permissions are intentionally split:
 | --- | --- |
 | Pending participants | Workspace `USER` only; no OCI IAM permission to operate AIDP |
 | Developer group | Workspace `USER`, catalog `SELECT`, shared compute `USE` |
-| API-only technical provisioner | Workspace `USER`, catalog `ADMIN`, shared compute `USE`, and `ADMIN` on `/Workspace/lab-users` |
+| Deployment operator | Built-in `AI_DATA_PLATFORM_ADMIN`, inherited from creating the platform and verified by post-apply |
 | Individual participant | Root `READ` without cascade, own folder `ADMIN` with cascade, own job `MANAGE`, and `ADMIN` on the four personal schemas |
 
-Developer and provisioner IAM can `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket. Pending participants receive no AIDP IAM grant.
+Developer IAM can `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket. The deployment operator retains its existing administrative identity; the lab creates no operator-specific user, group, role, policy, grant, or API key. Pending participants receive no AIDP IAM grant.
 
 Registration first creates or reconciles the Identity Domains user in the pending group. The API idempotently prepares the workspace, schemas, content, and permissions. Only after every phase succeeds does it add the user to the developer group and remove pending membership. The selected industry is immutable for an existing participant; a `409` instructs the operator to delete and recreate that participant instead of mixing two kits.
 
 ## Safety contract
 
-- Deploy Studio operator credentials are never copied into the repository or VM. The deployed service uses its own least-privilege API key; the OCI-local profile bind-mounts a sanitized config and the original operator key read-only and never copies or prints the private key.
-- Oracle forbids API keys on formal Identity Domains users with `serviceUser=true`. The provisioner therefore uses descriptive `user_type="Service"` with the formal service-user flag omitted, no password, no console access, and API keys as its only enabled credential type.
+- Operator credentials never enter Git, Terraform variables, Terraform state, VM metadata, hook artifacts, or logs. Post-apply delivers the uploaded `config` and `key.pem` to the VM exactly once through an application-encrypted Object Storage envelope.
+- The uploaded `key.pem` must be an unencrypted RSA API key. Preflight rejects encrypted, unreadable, or non-RSA keys before OCI provisioning and never echoes key material or passphrases.
+- The VM generates a temporary 3072-bit RSA bootstrap key. Post-apply wraps an AES-256-GCM data key with RSA-OAEP/SHA-256 and uploads only the encrypted envelope as `.bootstrap/operator-credentials.json`; no Vault, KMS key, OAuth client, or additional OCI API key is created.
 - The administrator password and registration code reach Terraform only as PBKDF2 hashes. Lab users activate their own Identity Domains password from the standard OCI welcome email.
-- Cloud-init generates the provisioner API private key under `/opt/aidp-lab/.oci`; post-apply registers only its public key with Identity Domains. The private key is mounted read-only at `/etc/aidp-lab/oci`, never leaves the VM, and is not stored in Terraform state, metadata, Object Storage, or Vault.
-- Participant and developer access is granted through AIDP RBAC, not broad OCI IAM. The provisioner is the only runtime principal with the administrative AIDP permissions listed above.
-- The runtime signs both Identity Domains and AIDP requests with the mounted provisioner API-key config selected by `OCI_CONFIG_FILE`; it does not fall back to an instance principal. The VM `.env` contains runtime configuration and PBKDF2 hashes, but no private key, OAuth secret, or plaintext administrator credential.
+- The VM decrypts the envelope locally, verifies that the profile user matches the preflight operator OCID and that `key.pem` matches the configured fingerprint, writes both files atomically with mode `0600`, then deletes the Object Storage object and verifies its absence. The temporary bootstrap key is removed afterward.
+- Participant and developer access is granted through AIDP RBAC. Post-apply verifies that the deployment operator is a direct member of built-in `AI_DATA_PLATFORM_ADMIN`; it never creates `AIDP_LAB_PROVISIONER`.
+- The runtime signs both Identity Domains and AIDP requests with the installed operator profile selected by `OCI_CONFIG_FILE`. Instance principals can access only the exact one-use bootstrap object and are not a runtime authentication fallback. The VM `.env` contains identifiers and PBKDF2 hashes, but no private key, OAuth secret, or plaintext administrator credential.
 - The v1.0.0 path has no explicit OSCS/OpenSearch deployment and no external AIDP volumes.
 - The Default Identity Domain must enable **Access Signing Certificate** so AIDP's API Gateway can read the domain's public JWK. Deploy Studio preflight fails before provisioning when this prerequisite is disabled.
 - OCI Provider 8.21 does not expose `force_destroy`; its native delete refuses a non-empty data bucket, preventing automatic lab-data deletion.
@@ -57,7 +58,7 @@ docker build -f docker/Dockerfile -t aidp-lab .
 docker run --rm -p 8080:80 -p 8443:443 --env-file .env aidp-lab
 ```
 
-Required runtime values are documented in `apps/backend/.env.example`. They include `IDENTITY_DOMAIN_URL`, `OCI_CONFIG_FILE=/etc/aidp-lab/oci/config`, `OBJECTSTORAGE_NAMESPACE`, and `BUCKET_NAME`. Identity and AIDP use the API-key profile referenced by `OCI_CONFIG_FILE`; there is no OAuth secret setting.
+Required runtime values are documented in `apps/backend/.env.example`. They include `IDENTITY_DOMAIN_URL`, `OCI_CONFIG_FILE=/etc/aidp-lab/oci/config`, `OBJECTSTORAGE_NAMESPACE`, and `BUCKET_NAME`. Identity and AIDP use the uploaded operator profile installed at `OCI_CONFIG_FILE`; there is no OAuth secret or separate provisioner setting.
 
 `GET /api/health` is strict: missing runtime configuration, a failed signed Identity Domains query, or an inaccessible required AIDP workspace/catalog/compute or exact data bucket returns `503`. It returns `200 {"status":"ok"}` only when those registration dependencies are usable; upstream details and credentials are never returned.
 
@@ -82,7 +83,7 @@ docker compose --env-file .env -f docker/docker-compose.oci-local.yml config --q
 docker compose --env-file .env -f docker/docker-compose.oci-local.yml up --build --detach
 ```
 
-The bootstrap discovers exactly one active lab, its `aidp-data-<suffix>` bucket, and its Object Storage namespace. It writes runtime values to ignored `.env` and a non-secret config to `.tmp/oci-local/<suffix>/config`; that config rewrites only `key_file` to `/etc/aidp-lab/oci/key.pem`. Compose bind-mounts the generated config and the original `--key` file read-only. Neither file contents nor host paths are printed. Because passphrases are never copied, this local profile requires a dedicated unencrypted API key.
+The bootstrap discovers exactly one active lab, its `aidp-data-<suffix>` bucket, and its Object Storage namespace. It writes runtime values to ignored `.env` and a non-secret config to `.tmp/oci-local/<suffix>/config`; that config rewrites only `key_file` to `/etc/aidp-lab/oci/key.pem`. Compose bind-mounts the generated config and the original operator `--key` file read-only. Neither file contents nor host paths are printed. Because passphrases are never copied, the supplied operator key must be unencrypted for this local profile.
 
 Open `http://127.0.0.1:18082`. This profile has no restart policy and binds only to `127.0.0.1`; it is for development testing, not a replacement for the OCI VM. It deliberately uses HTTP so DOM-based tests can run without accepting the VM-style self-signed certificate. Stop it with `docker compose --env-file .env -f docker/docker-compose.oci-local.yml down`.
 
@@ -98,9 +99,9 @@ The v1.0.0 preflight accepts only the trusted repository and immutable release S
 
 Deploy Studio manifest v1 currently has no hook between Resource Manager PLAN and its automatic APPLY, and it does not pass the plan JSON to repository preflight. Therefore the create-only plan check is available for manual/CI validation but cannot be enforced by this repository inside the current CloudTechNext PLAN/APPLY sequence. Do not start a lab APPLY until that explicit plan check has passed or CloudTechNext adds a post-plan/pre-apply hook.
 
-Deploy Studio creates or resolves the target compartment before starting Resource Manager. The repository preflight discovers the tenancy home region and uses OCI `create_compute_capacity_report` in the selected availability domain for E5/E4 Flex with the requested OCPUs and memory. It then supplies those non-secret selections with the compartment OCID, Object Storage namespace, deployment region, immutable 40-character source commit, and transformed secret fields.
+Deploy Studio creates or resolves the target compartment before starting Resource Manager. The repository preflight discovers the tenancy home region and operator user OCID, then uses OCI `create_compute_capacity_report` in the selected availability domain for E5/E4 Flex with the requested OCPUs and memory. Only the non-secret operator OCID reaches Terraform; the uploaded config and key remain hook inputs until the encrypted one-use delivery.
 
-The base deployment reconciles the AIDP workspace, catalog, shared compute, root `/Workspace/lab-users` folder, and the pending/developer/provisioner permission model. Registration then idempotently creates the opaque participant folder, four personal schemas, synthetic content, notebooks, job, and individual permissions before promoting pending membership. The bucket is addressed directly through OCI URIs; no external volumes or explicit OSCS/OpenSearch deployment participate in this path. The direct Workbench URL is derived from OCI's WebSocket endpoint when available; otherwise an administrator can set it in Settings without blocking deployment. Reconciliation waits for asynchronous resources and the HTTPS application to become strictly healthy, and refuses ambiguous or conflicting resources.
+The base deployment reconciles the AIDP workspace, catalog, shared compute, root `/Workspace/lab-users` folder, and pending/developer roles after verifying the operator's built-in platform administration. Registration then idempotently creates the opaque participant folder, four personal schemas, synthetic content, notebooks, job, and individual permissions before promoting pending membership. The bucket is addressed directly through OCI URIs; no external volumes or explicit OSCS/OpenSearch deployment participate in this path. Reconciliation waits for credential consumption, asynchronous AIDP resources, and strict HTTPS health, and refuses ambiguous or conflicting resources.
 
 The VM shape remains explicit per APPLY. The capacity report is a preselection, not a reservation, so capacity can change before instance creation. When the report says E5 is unavailable and E4 is available, preflight selects E4 without requiring another secret or user choice. If creation later fails because capacity changed, run a new APPLY; this package deliberately does not claim an automatic post-failure retry.
 
@@ -109,7 +110,7 @@ The VM shape remains explicit per APPLY. The capacity report is a preselection, 
 For a release candidate, use structured deployment events, API responses, logs, and DOM/accessibility state rather than screenshots:
 
 1. Require a successful Resource Manager APPLY and post-apply result, then verify `GET /api/health` returns exactly `200` and `{"status":"ok"}`.
-2. Verify the workspace, catalog, shared compute, `/Workspace/lab-users` root, and the RBAC matrix above. Confirm there are no external volumes and no explicit OSCS/OpenSearch resource.
+2. Verify the workspace, catalog, shared compute, `/Workspace/lab-users` root, and the RBAC matrix above. Confirm operator membership in `AI_DATA_PLATFORM_ADMIN`, absence of `AIDP_LAB_PROVISIONER`, deletion of `.bootstrap/operator-credentials.json`, zero external volumes, and no explicit OSCS/OpenSearch resource.
 3. Register one real Banking participant. Observe pending phases for identity, workspace, schemas, content, and permissions; the user must remain pending until all provisioning succeeds and then move to developers.
 4. Confirm the email address is absent from folder and schema names. The Banking source folder must contain 20 branches, 200 customers, 320 accounts, and 4,000 transactions; the four personal schemas, four notebooks, and 15 expected catalog tables must exist.
 5. Run the participant workflow through Landing, Bronze, Silver, and Gold. Require a successful terminal run, `quality_issues > 0`, Bronze totals equal to Landing totals, Silver totals no greater than Bronze, and Gold `banking_customer_value` plus `banking_branch_daily`.

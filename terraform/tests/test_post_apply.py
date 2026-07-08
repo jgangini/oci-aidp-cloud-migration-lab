@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +23,11 @@ class FakeApi:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict | None, dict | None]] = []
         self.list_calls: list[tuple[str, dict | None]] = []
-        self.actions: dict[str, dict] = {}
+        self.actions: dict[str, dict] = {
+            "/roles/platform-admin-key": {
+                "assignees": [{"type": "USER", "target": "ocid1.user.oc1..operator"}]
+            }
+        }
         self.workspace_objects: dict[str, str] = {}
         self.resources = {
             "/workspaces": [
@@ -35,7 +41,7 @@ class FakeApi:
             "/catalogs": [],
             "/schemas": [],
             "/volumes": [],
-            "/roles": [],
+            "/roles": [{"displayName": "AI_DATA_PLATFORM_ADMIN", "key": "platform-admin-key"}],
             "/workspaces/ws-key/clusters": [],
         }
 
@@ -150,7 +156,7 @@ def test_reconcile_builds_fresh_only_rbac_without_global_schemas_or_volumes(monk
         "bucket_name": "aidp-data-test",
         "developer_group_ocid": "ocid1.group.developer",
         "pending_group_ocid": "ocid1.group.pending",
-        "provisioner_group_ocid": "ocid1.group.provisioner",
+        "operator_user_ocid": "ocid1.user.oc1..operator",
     }
     reconciled, events = post_apply.reconcile(api, outputs)
     assert reconciled["catalog_key"] == "aidp_lab-key"
@@ -167,9 +173,9 @@ def test_reconcile_builds_fresh_only_rbac_without_global_schemas_or_volumes(monk
     assert volume_queries == [{"catalogKey": "aidp_lab-key"}]
     role_queries = [params for path, params in api.list_calls if path == "/roles"]
     assert {query["displayName"] for query in role_queries} == {
+        "AI_DATA_PLATFORM_ADMIN",
         "AIDP_LAB_DEVELOPER",
         "AIDP_LAB_PENDING",
-        "AIDP_LAB_PROVISIONER",
     }
     assert any("zero global schemas and zero external volumes" in event for event in events)
     cluster_payloads = [payload for method, path, payload, _ in api.calls if method == "POST" and path.endswith("/clusters")]
@@ -186,7 +192,6 @@ def test_reconcile_builds_fresh_only_rbac_without_global_schemas_or_volumes(monk
     } == {
         ("AIDP_LAB_DEVELOPER", ("USER",)),
         ("AIDP_LAB_PENDING", ("USER",)),
-        ("AIDP_LAB_PROVISIONER", ("USER",)),
     }
     catalog_permissions = api.actions["/catalogs/aidp_lab-key/permissions"]
     assert {
@@ -194,27 +199,39 @@ def test_reconcile_builds_fresh_only_rbac_without_global_schemas_or_volumes(monk
         for item in catalog_permissions
     } == {
         ("AIDP_LAB_DEVELOPER", ("SELECT",)),
-        ("AIDP_LAB_PROVISIONER", ("ADMIN",)),
     }
     compute_permissions = api.actions[
         "/workspaces/ws-key/clusters/aidp_lab_shared_compute-key/permissions"
     ]
-    assert {item["grantee"] for item in compute_permissions} == {
-        "AIDP_LAB_DEVELOPER",
-        "AIDP_LAB_PROVISIONER",
+    assert {item["grantee"] for item in compute_permissions} == {"AIDP_LAB_DEVELOPER"}
+    assert "/workspaces/ws-key/objects/lab-users-key/permissions" not in api.actions
+
+
+def test_reconcile_rejects_operator_without_platform_admin_membership(monkeypatch) -> None:
+    monkeypatch.setattr(post_apply, "_sleep", lambda _: None)
+    api = FakeApi()
+    api.actions["/roles/platform-admin-key"] = {
+        "assignees": [{"type": "USER", "target": "ocid1.user.oc1..another"}]
     }
-    root_permissions = api.actions[
-        "/workspaces/ws-key/objects/lab-users-key/permissions"
-    ]
-    assert root_permissions == [
-        {
-            "grantee": "AIDP_LAB_PROVISIONER",
-            "granteeName": "AIDP_LAB_PROVISIONER",
-            "granteeType": "ROLE",
-            "granteePermissions": ["ADMIN"],
-            "isPermissionsInheritable": True,
-        }
-    ]
+
+    with pytest.raises(post_apply.ReconcileError, match="not an AI_DATA_PLATFORM_ADMIN member"):
+        post_apply.reconcile(api, {"operator_user_ocid": "ocid1.user.oc1..operator"})
+
+
+def test_operator_platform_admin_membership_retries_eventual_consistency(monkeypatch) -> None:
+    api = FakeApi()
+    checks = iter((False, True))
+    monkeypatch.setattr(post_apply, "role_has_member", lambda *args: next(checks))
+    sleeps: list[int] = []
+    monkeypatch.setattr(post_apply, "_sleep", sleeps.append)
+
+    post_apply.assert_operator_platform_admin(
+        api,
+        "ocid1.user.oc1..operator",
+        attempts=2,
+    )
+
+    assert sleeps == [5]
 
 
 def test_fresh_only_rejects_legacy_overlapping_volume_without_deleting() -> None:
@@ -384,7 +401,7 @@ def test_role_readiness_rejects_extra_member() -> None:
 
     with pytest.raises(post_apply.ReconcileError, match="unexpected members"):
         post_apply.assert_role_members_exact(
-            Api(), "role-key", "AIDP_LAB_PROVISIONER", "GROUP", "expected"
+            Api(), "role-key", "AIDP_LAB_DEVELOPER", "GROUP", "expected"
         )
 
 
@@ -408,8 +425,8 @@ def test_role_readiness_rejects_master_catalog_or_broader_permissions() -> None:
         post_apply.assert_role_permissions_exact(
             Api(),
             "role-key",
-            "AIDP_LAB_PROVISIONER",
-            {("WORKSPACE", "workspace-key", frozenset({"USER"}))},
+            "AIDP_LAB_DEVELOPER",
+            {("CATALOG", "catalog-key", frozenset({"SELECT"}))},
         )
 
 
@@ -419,7 +436,7 @@ def test_resource_readiness_rejects_broader_direct_permission() -> None:
         def list_all(path):
             return [
                 {
-                    "grantee": "AIDP_LAB_PROVISIONER",
+                    "grantee": "AIDP_LAB_DEVELOPER",
                     "granteeType": "ROLE",
                     "granteePermissions": ["USE", "ADMIN"],
                 }
@@ -427,7 +444,7 @@ def test_resource_readiness_rejects_broader_direct_permission() -> None:
 
     with pytest.raises(post_apply.ReconcileError, match="conflicting direct permission"):
         post_apply.permission_is_assigned(
-            Api(), "/clusters/key/permissions", "AIDP_LAB_PROVISIONER", "USE"
+            Api(), "/clusters/key/permissions", "AIDP_LAB_DEVELOPER", "USE"
         )
 
 
@@ -516,8 +533,7 @@ def test_stopped_shared_compute_is_reusable_after_auto_termination() -> None:
     assert post_apply.is_active_or_raise({"lifecycleState": "STOPPED"}, "shared compute")
 
 
-def test_run_command_returns_only_public_key_and_fingerprint() -> None:
-    fingerprint = ":".join(f"{index:02x}" for index in range(16))
+def test_run_command_returns_only_bootstrap_public_key() -> None:
     public_key = "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----\n"
 
     class Model:
@@ -549,24 +565,77 @@ def test_run_command_returns_only_public_key_and_fingerprint() -> None:
             return SimpleNamespace(
                 data=SimpleNamespace(
                     lifecycle_state="SUCCEEDED",
-                    content=SimpleNamespace(
-                        text=f"{public_key}FINGERPRINT={fingerprint}\n"
-                    ),
+                    content=SimpleNamespace(text=public_key),
                 )
             )
 
     client = Client()
-    assert post_apply.fetch_provisioner_public_key(
+    assert post_apply.fetch_bootstrap_public_key(
         client, oci_module, "compartment-id", "instance-id"
-    ) == (public_key, fingerprint)
-    assert "exec sudo /usr/local/sbin/aidp-lab-public-key" in client.details.content.source.text
+    ) == public_key
+    assert "exec sudo /usr/local/sbin/aidp-lab-bootstrap-public-key" in client.details.content.source.text
     assert client.details.execution_time_out_in_seconds == 660
     assert "PRIVATE" not in client.details.content.source.text
 
 
-def test_run_command_waits_for_instance_agent_policy_propagation(monkeypatch) -> None:
-    fingerprint = ":".join(f"{index:02x}" for index in range(16))
+def test_run_command_accepts_existing_runtime_ready_marker() -> None:
+    assert post_apply.parse_public_key_output(
+        f"\n{post_apply.BOOTSTRAP_READY}\n"
+    ) == post_apply.BOOTSTRAP_READY
 
+
+def test_run_command_retries_submission_during_iam_propagation(monkeypatch) -> None:
+    class ServiceError(Exception):
+        status = 403
+
+    class Model:
+        def __init__(self, **kwargs) -> None:
+            self.__dict__.update(kwargs)
+
+    models = SimpleNamespace(
+        CreateInstanceAgentCommandDetails=Model,
+        InstanceAgentCommandTarget=Model,
+        InstanceAgentCommandContent=Model,
+        InstanceAgentCommandSourceViaTextDetails=Model,
+        InstanceAgentCommandOutputViaTextDetails=Model,
+    )
+    oci_module = SimpleNamespace(
+        compute_instance_agent=SimpleNamespace(models=models),
+        exceptions=SimpleNamespace(ServiceError=ServiceError),
+    )
+
+    class Client:
+        submissions = 0
+
+        def create_instance_agent_command(self, details):
+            self.submissions += 1
+            if self.submissions < 3:
+                raise ServiceError()
+            return SimpleNamespace(data=SimpleNamespace(id="command-id"))
+
+        @staticmethod
+        def get_instance_agent_command_execution(command_id, instance_id):
+            return SimpleNamespace(
+                data=SimpleNamespace(
+                    lifecycle_state="SUCCEEDED",
+                    content=SimpleNamespace(text=post_apply.BOOTSTRAP_READY),
+                )
+            )
+
+    monkeypatch.setattr(post_apply, "_sleep", lambda _: None)
+    client = Client()
+    assert post_apply.fetch_bootstrap_public_key(
+        client,
+        oci_module,
+        "compartment-id",
+        "instance-id",
+        attempts=1,
+        create_attempts=3,
+    ) == post_apply.BOOTSTRAP_READY
+    assert client.submissions == 3
+
+
+def test_run_command_waits_for_instance_agent_policy_propagation(monkeypatch) -> None:
     class ServiceError(Exception):
         status = 404
 
@@ -601,72 +670,276 @@ def test_run_command_waits_for_instance_agent_policy_propagation(monkeypatch) ->
                 data=SimpleNamespace(
                     lifecycle_state="SUCCEEDED",
                     content=SimpleNamespace(
-                        text=(
-                            "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----\n"
-                            f"FINGERPRINT={fingerprint}\n"
-                        )
+                        text="-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----\n"
                     ),
                 )
             )
 
     monkeypatch.setattr(post_apply.time, "sleep", lambda _: None)
     client = Client()
-    post_apply.fetch_provisioner_public_key(
+    post_apply.fetch_bootstrap_public_key(
         client, oci_module, "compartment-id", "instance-id", attempts=3
     )
     assert client.polls == 3
 
 
-def test_api_key_rotation_deletes_previous_keys_and_verifies_exact_fingerprint() -> None:
-    expected = ":".join(f"{index:02x}" for index in range(16))
+def test_bootstrap_envelope_uses_rsa_oaep_sha256_and_aes_gcm() -> None:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-    class IdentityClient:
-        def __init__(self) -> None:
-            self.keys = [SimpleNamespace(fingerprint="old:fingerprint")]
-            self.deleted: list[str] = []
-            self.uploaded = ""
-
-        def list_api_keys(self, user_ocid):
-            assert user_ocid == "ocid1.user.provisioner"
-            return SimpleNamespace(data=list(self.keys))
-
-        def delete_api_key(self, user_ocid, fingerprint):
-            assert user_ocid == "ocid1.user.provisioner"
-            self.deleted.append(fingerprint)
-            self.keys = [item for item in self.keys if item.fingerprint != fingerprint]
-
-        def upload_api_key(self, user_ocid, details):
-            assert user_ocid == "ocid1.user.provisioner"
-            self.uploaded = details.key
-            item = SimpleNamespace(fingerprint=expected)
-            self.keys = [item]
-            return SimpleNamespace(data=item)
-
-    class CreateApiKeyDetails:
-        def __init__(self, *, key) -> None:
-            self.key = key
-
-    pagination = SimpleNamespace(
-        list_call_get_all_results=lambda function, *args: function(*args)
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    envelope = json.loads(
+        post_apply.encrypt_bootstrap_credentials(public_key, "[DEFAULT]\nuser=operator\n", "private-key")
     )
-    oci_module = SimpleNamespace(
-        pagination=pagination,
-        identity=SimpleNamespace(
-            models=SimpleNamespace(CreateApiKeyDetails=CreateApiKeyDetails)
+
+    assert set(envelope) == {
+        "schema_version",
+        "wrapped_key_b64",
+        "nonce_b64",
+        "ciphertext_b64",
+    }
+    assert envelope["schema_version"] == 1
+    nonce = base64.b64decode(envelope["nonce_b64"], validate=True)
+    assert len(nonce) == 12
+    data_key = private_key.decrypt(
+        base64.b64decode(envelope["wrapped_key_b64"], validate=True),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
         ),
     )
-    identity = IdentityClient()
-    public_key = "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----\n"
-    assert post_apply.rotate_provisioner_api_key(
-        identity,
+    plaintext = AESGCM(data_key).decrypt(
+        nonce,
+        base64.b64decode(envelope["ciphertext_b64"], validate=True),
+        None,
+    )
+    assert json.loads(plaintext) == {
+        "config_text": "[DEFAULT]\nuser=operator\n",
+        "key_text": "private-key",
+    }
+
+
+def test_runtime_oci_config_is_unencrypted_verified_and_sanitized(tmp_path: Path) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key_path = tmp_path / "key.pem"
+    key_path.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    fingerprint_hex = post_apply.hashlib.md5(
+        private_key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ),
+        usedforsecurity=False,
+    ).hexdigest()
+    fingerprint = ":".join(
+        fingerprint_hex[index : index + 2]
+        for index in range(0, len(fingerprint_hex), 2)
+    )
+    config_path = tmp_path / "config"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[DEFAULT]",
+                "tenancy=ocid1.tenancy.oc1..tenant",
+                "user=ocid1.user.oc1..operator",
+                f"fingerprint={fingerprint}",
+                "region=us-chicago-1",
+                "key_file=C:/ignored.pem",
+                "[OTHER]",
+                "user=ocid1.user.oc1..other",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    config = post_apply.load_oci_config(str(config_path), str(key_path))
+    rendered = post_apply.render_runtime_oci_config(config)
+
+    assert "[OTHER]" not in rendered
+    assert "ocid1.user.oc1..other" not in rendered
+    assert "key_file=/etc/aidp-lab/oci/key.pem" in rendered
+
+
+def test_hook_rejects_operator_config_passphrase_without_disclosing_it(tmp_path: Path) -> None:
+    config_path = tmp_path / "config"
+    config_path.write_text(
+        "[DEFAULT]\ntenancy=t\nuser=u\nfingerprint=f\nregion=us-chicago-1\npass_phrase=do-not-log\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(post_apply.ReconcileError, match="unencrypted RSA PEM") as raised:
+        post_apply.load_oci_config(str(config_path), str(tmp_path / "missing.pem"))
+
+    assert "do-not-log" not in str(raised.value)
+
+
+def test_operator_credentials_are_delivered_to_exact_bootstrap_object(monkeypatch) -> None:
+    run_client = object()
+    oci_module = SimpleNamespace(
+        compute_instance_agent=SimpleNamespace(
+            ComputeInstanceAgentClient=lambda config, *, signer: run_client
+        ),
+        exceptions=SimpleNamespace(ServiceError=RuntimeError),
+    )
+    uploaded: list[tuple[str, str, str, bytes, str, str]] = []
+
+    class ObjectStorage:
+        @staticmethod
+        def put_object(namespace, bucket, name, body, *, content_type, if_none_match):
+            uploaded.append((namespace, bucket, name, body, content_type, if_none_match))
+
+    monkeypatch.setattr(post_apply, "fetch_bootstrap_public_key", lambda *args: "public-key")
+    monkeypatch.setattr(post_apply, "encrypt_bootstrap_credentials", lambda *args: b"encrypted-envelope")
+    outputs = {
+        "operator_user_ocid": "ocid1.user.oc1..operator",
+        "compartment_ocid": "ocid1.compartment.oc1..lab",
+        "instance_id": "ocid1.instance.oc1..vm",
+        "objectstorage_namespace": "namespace",
+        "bucket_name": "aidp-data-test",
+    }
+
+    assert post_apply.deliver_operator_credentials(
         oci_module,
-        "ocid1.user.provisioner",
-        public_key,
-        expected,
-    ) == expected
-    assert identity.deleted == ["old:fingerprint"]
-    assert identity.uploaded == public_key
-    assert "PRIVATE" not in identity.uploaded
+        {"user": outputs["operator_user_ocid"]},
+        object(),
+        outputs,
+        "us-chicago-1",
+        ObjectStorage(),
+        "config-text",
+        "key-text",
+    ) is True
+
+    assert uploaded == [
+        (
+            "namespace",
+            "aidp-data-test",
+            ".bootstrap/operator-credentials.json",
+            b"encrypted-envelope",
+            "application/json",
+            "*",
+        )
+    ]
+
+
+def test_operator_credential_delivery_is_idempotent_after_vm_ready(monkeypatch) -> None:
+    run_client = object()
+    oci_module = SimpleNamespace(
+        compute_instance_agent=SimpleNamespace(
+            ComputeInstanceAgentClient=lambda config, *, signer: run_client
+        ),
+        exceptions=SimpleNamespace(ServiceError=RuntimeError),
+    )
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        post_apply,
+        "fetch_bootstrap_public_key",
+        lambda *args: post_apply.BOOTSTRAP_READY,
+    )
+    monkeypatch.setattr(
+        post_apply,
+        "delete_bootstrap_object",
+        lambda *args: deleted.append(post_apply.BOOTSTRAP_OBJECT_NAME),
+    )
+    outputs = {
+        "operator_user_ocid": "ocid1.user.oc1..operator",
+        "compartment_ocid": "ocid1.compartment.oc1..lab",
+        "instance_id": "ocid1.instance.oc1..vm",
+        "objectstorage_namespace": "namespace",
+        "bucket_name": "aidp-data-test",
+    }
+
+    assert post_apply.deliver_operator_credentials(
+        oci_module,
+        {"user": outputs["operator_user_ocid"]},
+        object(),
+        outputs,
+        "us-chicago-1",
+        object(),
+        "config-text",
+        "key-text",
+    ) is False
+    assert deleted == [post_apply.BOOTSTRAP_OBJECT_NAME]
+
+
+def test_operator_credential_delivery_rejects_a_different_config_user() -> None:
+    outputs = {
+        "operator_user_ocid": "ocid1.user.oc1..operator",
+        "objectstorage_namespace": "namespace",
+        "bucket_name": "aidp-data-test",
+    }
+
+    with pytest.raises(post_apply.ReconcileError, match="does not match the uploaded OCI config"):
+        post_apply.deliver_operator_credentials(
+            SimpleNamespace(),
+            {"user": "ocid1.user.oc1..another"},
+            object(),
+            outputs,
+            "us-chicago-1",
+            object(),
+            "config-text",
+            "key-text",
+        )
+
+
+def test_bootstrap_consumption_and_cleanup_use_the_exact_object(monkeypatch) -> None:
+    class ServiceError(Exception):
+        def __init__(self, status: int) -> None:
+            self.status = status
+
+    oci_module = SimpleNamespace(exceptions=SimpleNamespace(ServiceError=ServiceError))
+    calls: list[tuple[str, str, str, str]] = []
+
+    class ObjectStorage:
+        polls = 0
+
+        def head_object(self, namespace, bucket, name):
+            calls.append(("HEAD", namespace, bucket, name))
+            self.polls += 1
+            if self.polls == 2:
+                raise ServiceError(404)
+
+        @staticmethod
+        def delete_object(namespace, bucket, name):
+            calls.append(("DELETE", namespace, bucket, name))
+
+    outputs = {"objectstorage_namespace": "namespace", "bucket_name": "aidp-data-test"}
+    storage = ObjectStorage()
+    monkeypatch.setattr(post_apply.time, "sleep", lambda _: None)
+
+    post_apply.wait_for_bootstrap_consumed(oci_module, storage, outputs, attempts=2)
+    post_apply.delete_bootstrap_object(oci_module, storage, outputs)
+
+    assert calls == [
+        ("HEAD", "namespace", "aidp-data-test", ".bootstrap/operator-credentials.json"),
+        ("HEAD", "namespace", "aidp-data-test", ".bootstrap/operator-credentials.json"),
+        ("DELETE", "namespace", "aidp-data-test", ".bootstrap/operator-credentials.json"),
+    ]
+
+
+def test_global_post_apply_deadline_stops_nested_retries(monkeypatch) -> None:
+    monkeypatch.setattr(post_apply.time, "monotonic", lambda: 100.0)
+    previous = post_apply._post_apply_deadline
+    post_apply._post_apply_deadline = 100.5
+    try:
+        with pytest.raises(post_apply.ReconcileError, match="safe execution deadline"):
+            post_apply._sleep(1)
+    finally:
+        post_apply._post_apply_deadline = previous
 
 
 def test_permission_verification_paginates_and_correlates_one_item() -> None:

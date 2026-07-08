@@ -18,6 +18,15 @@ variable "home_region" {
   }
 }
 
+variable "operator_user_ocid" {
+  description = "OCI user OCID from the Deploy Studio config persisted on the registration VM."
+  type        = string
+  validation {
+    condition     = can(regex("^ocid1\\.user\\.", var.operator_user_ocid))
+    error_message = "operator_user_ocid must be an OCI user OCID."
+  }
+}
+
 variable "compartment_ocid" {
   description = "Target compartment already created or resolved by Deploy Studio."
   type        = string

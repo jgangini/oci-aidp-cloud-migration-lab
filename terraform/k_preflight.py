@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import oci
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from release_gate import compartment_target, validate_context, validate_source
 
@@ -125,8 +127,9 @@ def select_inputs(
     target, mode = compartment_target(context)
     region = str(context.get("region") or sdk_config.get("region") or "").strip()
     tenancy_id = str(sdk_config.get("tenancy") or "").strip()
-    if not region or not tenancy_id:
-        raise ValueError("preflight requires deployment region and tenancy OCID")
+    operator_user_ocid = str(sdk_config.get("user") or "").strip()
+    if not region or not tenancy_id or not operator_user_ocid.startswith("ocid1.user."):
+        raise ValueError("preflight requires deployment region, tenancy OCID, and operator user OCID")
 
     candidates = _candidate_shapes(E5_SHAPE)
     ocpus = 2.0
@@ -186,6 +189,7 @@ def select_inputs(
             return {
                 "inputs": {
                     "home_region": home_region,
+                    "operator_user_ocid": operator_user_ocid,
                     "preferred_vm_shape": selected,
                     "availability_domain_index": availability_domain_index,
                 },
@@ -226,9 +230,23 @@ def _write_result(payload: dict[str, Any]) -> None:
     path.chmod(0o600)
 
 
+def _require_unencrypted_private_key(config: dict[str, Any], key_path: str) -> None:
+    if config.get("pass_phrase"):
+        raise ValueError("Deploy Studio requires an unencrypted OCI API private key")
+    try:
+        private_key = serialization.load_pem_private_key(Path(key_path).read_bytes(), password=None)
+    except TypeError as exc:
+        raise ValueError("Deploy Studio requires an unencrypted OCI API private key") from exc
+    except (OSError, ValueError) as exc:
+        raise ValueError("OCI API private key is unreadable or invalid") from exc
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise ValueError("OCI API private key must be RSA")
+
+
 def _load_sdk_config() -> dict[str, Any]:
     config = oci.config.from_file(os.environ["DEPLOY_STUDIO_OCI_CONFIG"], "DEFAULT")
     config["key_file"] = os.environ["DEPLOY_STUDIO_OCI_KEY"]
+    _require_unencrypted_private_key(config, config["key_file"])
     oci.config.validate_config(config)
     return config
 

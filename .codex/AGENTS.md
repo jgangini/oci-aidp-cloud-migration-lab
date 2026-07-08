@@ -25,11 +25,12 @@ Keep this file repo-specific. Do not duplicate universal rules that already live
 
 ## Repo-Specific Friction
 
-- Sensitive paths or fragile areas: `terraform/h_oci_identity.tf`, `terraform/hooks/post_apply.py`, SCIM filters, cloud-init, and provisioner API-key rotation.
-- Credentials, external systems, or approval boundaries: OCI config/key and plaintext lab secrets never enter Git, Terraform variables, artifacts, or VM metadata.
+- Sensitive paths or fragile areas: `terraform/hooks/post_apply.py`, `terraform/templatefile/user_data.sh`, `apps/backend/app/credential_bootstrap.py`, SCIM filters, and the one-use credential envelope.
+- Credentials, external systems, or approval boundaries: the uploaded OCI config/key may exist only in Deploy Studio private temporary files, the authenticated encrypted envelope, and the root-only VM runtime directory. They never enter Git, Terraform variables/state, VM metadata, artifacts, or logs.
 - Noisy, slow, or expensive commands to avoid by default: live OCI APPLY and Identity Domains mutations; use provider mocks and HTTP fakes first.
 - Before a live AIDP APPLY, require the Default Identity Domain's **Access Signing Certificate** setting; do not bypass the repository preflight because a closed public JWK leaves AIDP retrying OSCS configuration.
-- Identity Domains uses the dedicated provisioner's API key from `OCI_CONFIG_FILE`; do not introduce an OAuth client, Vault secret, or instance-principal fallback.
+- Identity Domains and AIDP reuse the uploaded operator profile from `OCI_CONFIG_FILE`; do not create a dedicated provisioner user/group/policy/key, `AIDP_LAB_PROVISIONER`, OAuth client, or Vault secret.
+- The VM instance principal may manage only the exact `.bootstrap/operator-credentials.json` object during bootstrap. Require authenticated encryption, exact operator/fingerprint validation, atomic `0600` installation, verified object deletion, and temporary RSA-key removal before runtime is ready.
 - A manual AIDP platform must have its own stable 9-statement required policy. Never rely on a policy owned by another Terraform stack; VNIC, subnet, NSG, and Object Storage service deletion permissions remain optional.
 
 ## Continuous Improvement Triggers

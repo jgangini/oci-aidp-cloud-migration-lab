@@ -16,9 +16,10 @@ The app is configured through [`apps/backend/app/config.py`](../apps/backend/app
 
 ### Identity integration
 [`apps/backend/app/identity.py`](../apps/backend/app/identity.py) implements the OCI-facing identity workflow. Important behaviors:
-- requests are signed with the dedicated provisioner's OCI API key loaded from the `DEFAULT` profile at `OCI_CONFIG_FILE`
-- the VM mounts `/opt/aidp-lab/.oci` read-only at `/etc/aidp-lab/oci`; the private key never enters environment variables or Terraform state
-- OCI SDK request signing replaces the former OAuth client and Vault-secret flow
+- requests are signed with the exact operator profile uploaded to Deploy Studio and installed at `OCI_CONFIG_FILE`
+- post-apply delivers that profile once in an AES-256-GCM envelope whose data key is wrapped with the VM's temporary RSA-OAEP/SHA-256 bootstrap key
+- the VM validates the expected operator OCID and API-key fingerprint, installs the profile atomically with mode `0600`, deletes and verifies removal of the bootstrap object, then removes the temporary RSA key
+- OCI SDK request signing uses no OAuth client, Vault secret, dedicated provisioner identity, additional API key, or runtime instance-principal fallback
 - user lookup is based on email/userName, but unmanaged matches are rejected
 - new or reconciled users enter pending before participant resources are created
 - developer membership is added and pending membership removed only after provisioning succeeds
@@ -34,23 +35,23 @@ The frontend in [`apps/frontend/src/App.tsx`](../apps/frontend/src/App.tsx) rend
 
 ### OCI infrastructure
 The Terraform package under [`terraform/`](../terraform/) is what turns the app into a deployable OCI lab:
-- tenancy-scoped Identity Domains groups, the API-only provisioner user, and IAM grants
+- tenancy-scoped pending/developer Identity Domains groups and their scoped IAM grants; no dedicated provisioner identity or policy
 - regional networking, Compute, Object Storage, and AIDP resources
 - a single Oracle-managed Object Storage data plane with the medallion prefixes called out in the README
 - a registration VM whose bootstrap logic is generated from `templatefile/user_data.sh`
-- post-apply reconciliation for the workspace, catalog, shared compute, root folder, roles, group membership, and permissions
+- post-apply reconciliation for the workspace, catalog, shared compute, root folder, roles, group membership, permissions, and one-use operator-profile delivery
 
 ### Participant isolation and RBAC
 Folders and schemas use a deterministic opaque participant key, never an email address. Each participant receives `/Workspace/lab-users/<key>/<industry>`, four personal schemas, four notebooks, and one personal job. Data uses OCI URIs in the single `aidp-data-<suffix>` bucket; there are no external AIDP volumes and no explicit OSCS/OpenSearch resource.
 
-Provisioning state is held under `/Workspace/lab-users/.control/<key>.json`, where only the provisioner has inherited administration. The manifest inside the participant folder is descriptive and deliberately not trusted for industry immutability, drift repair, or cleanup.
+Provisioning state is held under `/Workspace/lab-users/.control/<key>.json`, where only the platform-administrator operator has inherited administration. The manifest inside the participant folder is descriptive and deliberately not trusted for industry immutability, drift repair, or cleanup.
 
 - Pending: workspace `USER` only and no OCI IAM grant to operate AIDP.
 - Developer group: workspace `USER`, catalog `SELECT`, shared compute `USE`.
-- API-only technical provisioner: descriptive `user_type="Service"`, formal `serviceUser` disabled because Oracle forbids API keys on it, no password or console, workspace `USER`, catalog `ADMIN`, shared compute `USE`, root folder `ADMIN`.
+- Deployment operator: verified direct member of the built-in `AI_DATA_PLATFORM_ADMIN` role inherited from platform creation; no custom `AIDP_LAB_PROVISIONER` role.
 - Participant: root `READ` without cascade, own folder `ADMIN` with cascade, own job `MANAGE`, four personal schemas `ADMIN`.
 
-Developer and provisioner IAM can `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket. Pending participants have no AIDP IAM grant.
+Developer IAM can `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket. The operator retains its existing administrative identity, and pending participants have no AIDP IAM grant.
 
 ### Run modes
 The repository supports three practical modes:
@@ -59,7 +60,7 @@ The repository supports three practical modes:
 3. OCI-connected local testing with `docker/docker-compose.oci-local.yml` and `scripts/bootstrap_local_oci_env.py`
 
 ## Design boundaries
-- Secrets stay out of source control. The repo uses hashes, ignored env files, and a dedicated least-privilege provisioner API key whose private half remains on the VM. There is no OAuth, Vault, or instance-principal fallback for runtime provisioning.
+- Secrets stay out of source control. The uploaded operator profile moves once through an authenticated envelope: AES-256-GCM for the payload, RSA-OAEP/SHA-256 for the data key, and instance-principal access limited to the exact `.bootstrap/operator-credentials.json` object. Successful bootstrap requires validation, atomic root-only installation, verified object deletion, and removal of the temporary RSA key. There is no OAuth, Vault, dedicated provisioner, additional API key, or instance-principal fallback at runtime.
 - The backend is the boundary between browser state and OCI identity state; the frontend never stores secrets in browser storage.
 - OCI-local generates only a sanitized non-secret config and bind-mounts the original operator key read-only.
 - The lab distinguishes managed users from pre-existing Identity Domains accounts, which prevents accidental deletion of unmanaged identities.

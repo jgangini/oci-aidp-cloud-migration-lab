@@ -45,17 +45,26 @@ def test_deploy_studio_manifest_contract() -> None:
         "complete",
     ]
     assert not {"database", "wallet"} & {step["key"] for step in manifest["run_steps"]}
-    assert [field["name"] for field in manifest["preflight"]["runtime_fields"]] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
-    assert manifest["preflight"]["output_inputs"] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
+    assert [field["name"] for field in manifest["preflight"]["runtime_fields"]] == [
+        "home_region",
+        "operator_user_ocid",
+        "preferred_vm_shape",
+        "availability_domain_index",
+    ]
+    assert manifest["preflight"]["output_inputs"] == [
+        "home_region",
+        "operator_user_ocid",
+        "preferred_vm_shape",
+        "availability_domain_index",
+    ]
     assert (root / manifest["preflight"]["entrypoint"]).is_file()
     assert "aidp_workbench_url" in manifest["outputs"]
     assert {
         "aidp_catalog_name",
         "aidp_shared_compute_name",
         "aidp_external_volume_count",
-        "aidp_provisioner_ready",
-        "provisioner_user_ocid",
-        "provisioner_group_ocid",
+        "aidp_runtime_ready",
+        "operator_user_ocid",
         "home_region",
     }.issubset(manifest["outputs"])
     assert "aidp_console_url" not in manifest["outputs"]
@@ -70,6 +79,7 @@ def test_hook_result_matches_runner_and_manifest_contract() -> None:
     assert spec and spec.loader
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    assert module.POST_APPLY_BUDGET_SECONDS < manifest["post_apply"]["timeout_seconds"]
     context = {
         "deployment_id": "deployment-test",
         "source": {"repository": "owner/repo", "ref": "v1.0.0", "commit_sha": "0" * 40},
@@ -79,7 +89,7 @@ def test_hook_result_matches_runner_and_manifest_contract() -> None:
         "catalog_name": "aidp_lab",
         "shared_compute_name": "aidp_lab_shared_compute",
         "external_volume_count": 0,
-        "provisioner_ready": True,
+        "runtime_ready": True,
     }
     result = module.build_success_result(
         context, resources, ["ready"], "https://aidp.example.test"
@@ -89,7 +99,7 @@ def test_hook_result_matches_runner_and_manifest_contract() -> None:
         "aidp_workbench_url": "https://aidp.example.test",
         "aidp_catalog_name": "aidp_lab",
         "aidp_shared_compute_name": "aidp_lab_shared_compute",
-        "aidp_provisioner_ready": True,
+        "aidp_runtime_ready": True,
         "aidp_external_volume_count": 0,
     }
     assert {item["name"] for item in result["artifacts"]} == set(manifest["artifacts"])
@@ -131,6 +141,8 @@ def test_runtime_security_contracts() -> None:
     assert "retry 5 docker build" in cloud_init
     assert "tee -a /var/log/aidp-lab-bootstrap.log /dev/console" in cloud_init
     assert 'AIDP bootstrap failed with exit $status' in cloud_init
+    assert 'if [ "$HEALTH_STATUS" = "200" ]; then' in cloud_init
+    assert '|| [ "$HEALTH_STATUS" = "503" ]' not in cloud_init
     assert "PUBLIC_IP=$(oci-public-ip -g" in cloud_init
     assert "grep -Eo '([0-9]{1,3}\\.){3}[0-9]{1,3}'" in cloud_init
     assert "tr -cd 'A-Za-z0-9.-'" in cloud_init
@@ -152,17 +164,9 @@ def test_runtime_security_contracts() -> None:
     assert 'desired_state = "ENABLED"' in compute
     assert 'variable "vm_ocpus"' not in variables
     assert 'variable "vm_memory_gbs"' not in variables
-    assert 'resource "oci_identity_domains_user" "provisioner"' in identity
-    assert 'user_type     = "Service"' in identity
-    assert "can_use_api_keys                 = true" in identity
-    assert "can_use_console                  = false" in identity
-    assert "can_use_console_password         = false" in identity
-    assert 'resource "oci_identity_domains_group" "provisioner"' in identity
-    assert "value = oci_identity_domains_user.provisioner.id" in identity
-    assert identity.count('resource "oci_identity_domains_grant"') == 1
-    assert 'grant_mechanism = "ADMINISTRATOR_TO_USER"' in identity
-    assert 'type  = "User"' in identity
-    assert 'app_role_filter = "displayName eq \\"User Administrator\\""' in identity
+    assert 'resource "oci_identity_domains_user"' not in identity
+    assert 'resource "oci_identity_domains_group" "provisioner"' not in identity
+    assert 'resource "oci_identity_domains_grant"' not in identity
     assert "API Key Administrator" not in identity
     assert aidp.count("oci.home") == 1
     assert 'resource "oci_identity_domains_app"' not in identity
@@ -188,10 +192,15 @@ def test_runtime_security_contracts() -> None:
     assert 'resource "oci_identity_policy" "vm_run_command"' in compute
     assert "manage instance-agent-command-family" in compute
     assert "use instance-agent-command-execution-family" in compute
-    assert 'chmod 0600 "$OCI_DIR/key.pem" "$OCI_DIR/config"' in cloud_init
+    credential_bootstrap = (root / "apps/backend/app/credential_bootstrap.py").read_text(encoding="utf-8")
+    assert 'temporary.chmod(0o600)' in credential_bootstrap
+    assert 'path.chmod(0o600)' in credential_bootstrap
     assert '"$OCI_DIR:/etc/aidp-lab/oci:ro,Z"' in cloud_init
-    assert "ocarun ALL=(root) NOPASSWD: /usr/local/sbin/aidp-lab-public-key" in cloud_init
-    assert "cat /opt/aidp-lab/.oci/key_public.pem" in cloud_init
+    assert "ocarun ALL=(root) NOPASSWD: /usr/local/sbin/aidp-lab-bootstrap-public-key" in cloud_init
+    assert "AIDP_LAB_CREDENTIALS_READY" in cloud_init
+    assert "cat /opt/aidp-lab/bootstrap/key_public.pem" in cloud_init
+    assert "cat /opt/aidp-lab/bootstrap/key.pem" not in cloud_init
+    assert "cat /opt/aidp-lab/.oci/config" not in cloud_init
     assert "cat /opt/aidp-lab/.oci/key.pem" not in cloud_init
     assert "AIDP_WORKBENCH_URL=${aidp_workbench_url}" in cloud_init
     assert "AIDP_CONSOLE_URL" not in cloud_init

@@ -11,6 +11,8 @@ SOURCE_DIR="/opt/aidp-lab/source"
 STATE_DIR="/opt/aidp-lab/state"
 TLS_DIR="/opt/aidp-lab/tls"
 OCI_DIR="/opt/aidp-lab/.oci"
+BOOTSTRAP_DIR="/opt/aidp-lab/bootstrap"
+BOOTSTRAP_OBJECT=".bootstrap/operator-credentials.json"
 LOCAL_IMAGE="aidp-lab:${source_commit_sha}"
 
 retry() {
@@ -44,40 +46,31 @@ use_reachable_base_images() {
 dnf -y makecache
 dnf -y install dnf-plugins-core firewalld curl git openssl python3 sudo
 
-install -d -m 0700 "$TLS_DIR" "$STATE_DIR" "$OCI_DIR"
+install -d -m 0700 "$TLS_DIR" "$STATE_DIR" "$OCI_DIR" "$BOOTSTRAP_DIR"
 umask 077
-if [ ! -s "$OCI_DIR/key.pem" ]; then
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$OCI_DIR/key.pem"
+if [ ! -s "$BOOTSTRAP_DIR/key.pem" ]; then
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$BOOTSTRAP_DIR/key.pem"
 fi
-openssl pkey -in "$OCI_DIR/key.pem" -pubout -out "$OCI_DIR/key_public.pem"
-FINGERPRINT=$(openssl rsa -pubout -outform DER -in "$OCI_DIR/key.pem" 2>/dev/null | openssl md5 -c | awk '{print $2}')
-test -n "$FINGERPRINT"
-printf '%s\n' "$FINGERPRINT" >"$OCI_DIR/fingerprint"
-cat >"$OCI_DIR/config" <<EOF
-[DEFAULT]
-user=${provisioner_user_ocid}
-fingerprint=$FINGERPRINT
-tenancy=${tenancy_ocid}
-region=${aidp_region}
-key_file=/etc/aidp-lab/oci/key.pem
-EOF
-chmod 0600 "$OCI_DIR/key.pem" "$OCI_DIR/config"
-chmod 0644 "$OCI_DIR/key_public.pem" "$OCI_DIR/fingerprint"
+openssl pkey -in "$BOOTSTRAP_DIR/key.pem" -pubout -out "$BOOTSTRAP_DIR/key_public.pem"
+chmod 0600 "$BOOTSTRAP_DIR/key.pem"
+chmod 0644 "$BOOTSTRAP_DIR/key_public.pem"
 
-cat >/usr/local/sbin/aidp-lab-public-key <<'EOF'
+cat >/usr/local/sbin/aidp-lab-bootstrap-public-key <<'EOF'
 #!/bin/bash
 set -euo pipefail
-cat /opt/aidp-lab/.oci/key_public.pem
-printf 'FINGERPRINT='
-cat /opt/aidp-lab/.oci/fingerprint
+if [ -s /opt/aidp-lab/.oci/config ] && [ -s /opt/aidp-lab/.oci/key.pem ]; then
+  printf '%s\n' AIDP_LAB_CREDENTIALS_READY
+else
+  cat /opt/aidp-lab/bootstrap/key_public.pem
+fi
 EOF
-chown root:root /usr/local/sbin/aidp-lab-public-key
-chmod 0755 /usr/local/sbin/aidp-lab-public-key
-cat >/etc/sudoers.d/101-aidp-lab-public-key <<'EOF'
-ocarun ALL=(root) NOPASSWD: /usr/local/sbin/aidp-lab-public-key
+chown root:root /usr/local/sbin/aidp-lab-bootstrap-public-key
+chmod 0755 /usr/local/sbin/aidp-lab-bootstrap-public-key
+cat >/etc/sudoers.d/101-aidp-lab-bootstrap-public-key <<'EOF'
+ocarun ALL=(root) NOPASSWD: /usr/local/sbin/aidp-lab-bootstrap-public-key
 EOF
-chmod 0440 /etc/sudoers.d/101-aidp-lab-public-key
-visudo -cf /etc/sudoers.d/101-aidp-lab-public-key
+chmod 0440 /etc/sudoers.d/101-aidp-lab-bootstrap-public-key
+visudo -cf /etc/sudoers.d/101-aidp-lab-bootstrap-public-key
 
 systemctl stop firewalld >/dev/null 2>&1 || true
 firewall-offline-cmd --zone=public --add-service=http
@@ -159,6 +152,20 @@ EOF
 chmod 0600 /opt/aidp-lab/.env
 
 retry 5 docker build -f "$SOURCE_DIR/docker/Dockerfile" -t "$LOCAL_IMAGE" "$SOURCE_DIR"
+retry 60 docker run --rm \
+  --network host \
+  --entrypoint python \
+  -e OCI_BOOTSTRAP_NAMESPACE=${objectstorage_namespace} \
+  -e OCI_BOOTSTRAP_BUCKET=${bucket_name} \
+  -e OCI_BOOTSTRAP_OBJECT="$BOOTSTRAP_OBJECT" \
+  -e OCI_BOOTSTRAP_PRIVATE_KEY=/etc/aidp-lab/bootstrap/key.pem \
+  -e OCI_EXPECTED_USER_OCID=${operator_user_ocid} \
+  -e OCI_CONFIG_DIR=/etc/aidp-lab/oci \
+  -e OCI_REGION=${aidp_region} \
+  -v "$BOOTSTRAP_DIR:/etc/aidp-lab/bootstrap:ro,Z" \
+  -v "$OCI_DIR:/etc/aidp-lab/oci:rw,Z" \
+  "$LOCAL_IMAGE" -m app.credential_bootstrap
+rm -f "$BOOTSTRAP_DIR/key.pem" "$BOOTSTRAP_DIR/key_public.pem"
 docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$APP_NAME" \
@@ -173,7 +180,7 @@ docker run -d \
 
 for attempt in $(seq 1 120); do
   HEALTH_STATUS=$(curl --silent --insecure --output /dev/null --write-out '%%{http_code}' https://127.0.0.1/api/health) || HEALTH_STATUS=""
-  if [ "$HEALTH_STATUS" = "200" ] || [ "$HEALTH_STATUS" = "503" ]; then
+  if [ "$HEALTH_STATUS" = "200" ]; then
     break
   fi
   if [ "$attempt" -eq 120 ]; then
