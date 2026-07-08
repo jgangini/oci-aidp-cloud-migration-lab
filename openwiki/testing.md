@@ -1,6 +1,6 @@
 # Testing guide
 
-This repository leans on tests to protect the lab’s security and workflow boundaries. The most useful thing to know is not just where tests live, but what each suite is defending.
+Release v1.0.0 leans on tests to protect the lab’s security and workflow boundaries. The most useful thing to know is not just where tests live, but what each suite is defending.
 
 ## Backend tests
 [`apps/backend/tests/test_api.py`](../apps/backend/tests/test_api.py) verifies the service contract around:
@@ -29,11 +29,12 @@ The Terraform tests under [`terraform/tests/`](../terraform/tests/) cover infras
 - VM bootstrapping or networking
 - OCI capacity selection and public IP handling
 - Identity Domains reconciliation
+- provisioner API-key generation, public-key registration, and signed Identity Domains requests
 - AIDP workspace/catalog/compute/folder/schema/job permissions
 - post-apply idempotency and conflict handling
 
 ## OCI-local and live acceptance
-Run `python scripts/bootstrap_local_oci_env.py --self-check`, then validate `docker/docker-compose.oci-local.yml` with the generated `.env`. The profile must mount the sanitized config and original key read-only, bind only to localhost, and report healthy only when OAuth/Identity plus the service-key AIDP workspace/catalog/compute and exact-bucket checks pass.
+Run `python scripts/bootstrap_local_oci_env.py --self-check`, then validate `docker/docker-compose.oci-local.yml` with the generated `.env`. The profile must mount the sanitized config and original key read-only, bind only to localhost, and report healthy only when a signed Identity Domains query plus the provisioner-key AIDP workspace/catalog/compute and exact-bucket checks pass.
 
 The release acceptance uses one real Banking participant. Require opaque folder/schema names; 20/200/320/4,000 Landing rows; four notebooks; four schemas; 15 catalog tables; `quality_issues > 0`; Bronze totals equal to Landing; Silver totals no greater than Bronze; a successful chained job; and Gold `banking_customer_value` plus `banking_branch_daily`. Run it twice and require identical counts. Promotion from pending to developers happens only after permissions complete. Use structured state and logs, not screenshots, and leave the participant active for follow-up.
 

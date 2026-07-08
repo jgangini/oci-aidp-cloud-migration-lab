@@ -7,6 +7,9 @@ dist
 *.tsbuildinfo
 __pycache__
 .pytest_cache
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
 *.tfstate*
 .oci
 .tmp

@@ -3,7 +3,6 @@ mock_provider "oci" {
   alias = "home"
 }
 mock_provider "random" {}
-mock_provider "time" {}
 
 override_resource {
   target = random_string.suffix
@@ -203,6 +202,15 @@ run "resolved_compartment_contract" {
       ])
     )
     error_message = "The dedicated provisioner group must contain exactly the technical user."
+  }
+
+  assert {
+    condition = (
+      oci_identity_domains_grant.provisioner_user_admin.grant_mechanism == "ADMINISTRATOR_TO_USER" &&
+      length(oci_identity_domains_grant.provisioner_user_admin.grantee) == 1 &&
+      oci_identity_domains_grant.provisioner_user_admin.grantee[0].type == "User"
+    )
+    error_message = "The API-key provisioner must receive User Administrator directly, without an OAuth app."
   }
 
   assert {

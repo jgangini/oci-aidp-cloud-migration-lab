@@ -87,13 +87,6 @@ def _require_compartment_target(identity: Any, aidp: Any, tenancy_id: str, targe
     return f"{target} is available to create"
 
 
-def _require_vault_slots(limits: Any, tenancy_id: str) -> float:
-    available = limits.get_resource_availability("kms", "virtual-vault-count", tenancy_id).data.available
-    if available is None or float(available) < 2:
-        raise RuntimeError("OCI requires at least two available virtual Vault slots in us-chicago-1")
-    return float(available)
-
-
 def _require_public_signing_certificate(
     sdk_config: dict[str, Any],
     tenancy_id: str,
@@ -127,7 +120,6 @@ def select_inputs(
     identity_factory: Callable[[dict[str, Any]], Any] = oci.identity.IdentityClient,
     compute_factory: Callable[[dict[str, Any]], Any] = oci.core.ComputeClient,
     identity_domains_factory: Callable[..., Any] = oci.identity_domains.IdentityDomainsClient,
-    limits_factory: Callable[[dict[str, Any]], Any] = oci.limits.LimitsClient,
     aidp_factory: Callable[[dict[str, Any]], Any] = oci.ai_data_platform.AiDataPlatformClient,
 ) -> dict[str, Any]:
     target, mode = compartment_target(context)
@@ -149,7 +141,6 @@ def select_inputs(
         target,
         mode,
     )
-    vault_slots = _require_vault_slots(limits_factory(regional_config), tenancy_id)
     home_region = _home_region(identity, tenancy_id)
     _require_public_signing_certificate(
         sdk_config,
@@ -200,19 +191,14 @@ def select_inputs(
                 },
                 "events": [
                     {
-                        "name": "Immutable v2.0.1 source",
+                        "name": "Immutable v1.0.0 source",
                         "status": "passed",
-                        "message": "v2.0.1 source context and deployment source passed",
+                        "message": "v1.0.0 source context and deployment source passed",
                     },
                     {
                         "name": "Compartment availability",
                         "status": "passed",
                         "message": compartment_message,
-                    },
-                    {
-                        "name": "Virtual Vault capacity",
-                        "status": "passed",
-                        "message": f"{vault_slots:g} regional slots available",
                     },
                     {"name": "OCI tenancy home region", "status": "passed", "message": home_region},
                     {

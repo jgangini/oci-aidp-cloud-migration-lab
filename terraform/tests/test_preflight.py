@@ -76,15 +76,6 @@ class Compute:
         )
 
 
-class Limits:
-    def __init__(self, available: float = 2) -> None:
-        self.available = available
-
-    def get_resource_availability(self, service_name: str, limit_name: str, _compartment_id: str) -> Any:
-        assert (service_name, limit_name) == ("kms", "virtual-vault-count")
-        return SimpleNamespace(data=SimpleNamespace(available=self.available))
-
-
 class Aidp:
     def __init__(self, work_requests: list[Any] | None = None) -> None:
         self.work_requests = work_requests or []
@@ -97,14 +88,12 @@ def _select(
     statuses: dict[str, tuple[str, str]],
     *,
     identity: Identity | None = None,
-    limits: Limits | None = None,
     aidp: Aidp | None = None,
     compartment: str = "oci-aidp-cloud-migration-lab-5",
     compartment_mode: str = "new",
 ) -> tuple[dict[str, Any], Compute]:
     compute = Compute(statuses)
     identity = identity or Identity()
-    limits = limits or Limits()
     aidp = aidp or Aidp()
     result = preflight.select_inputs(
         {
@@ -117,7 +106,6 @@ def _select(
         identity_factory=lambda _config: identity,
         compute_factory=lambda _config: compute,
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
-        limits_factory=lambda _config: limits,
         aidp_factory=lambda _config: aidp,
     )
     return result, compute
@@ -204,12 +192,6 @@ def test_preflight_reports_selected_new_name_is_available() -> None:
     assert event["message"] == "custom.lab_2026 is available to create"
 
 
-def test_preflight_requires_two_available_virtual_vault_slots() -> None:
-    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
-    with pytest.raises(RuntimeError, match="at least two"):
-        _select({preflight.E5_SHAPE: (available, "1")}, limits=Limits(1))
-
-
 def test_preflight_requires_public_identity_domain_signing_certificate() -> None:
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
     with pytest.raises(RuntimeError, match="Access Signing Certificate"):
@@ -219,7 +201,6 @@ def test_preflight_requires_public_identity_domain_signing_certificate() -> None
             identity_factory=lambda _config: Identity(),
             compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
             identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(False),
-            limits_factory=lambda _config: Limits(),
             aidp_factory=lambda _config: Aidp(),
         )
 
@@ -239,7 +220,6 @@ def test_preflight_finds_default_domain_by_stable_type() -> None:
         identity_factory=lambda _config: RecordingIdentity(),
         compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
-        limits_factory=lambda _config: Limits(),
         aidp_factory=lambda _config: Aidp(),
     )
 
@@ -311,7 +291,6 @@ def test_preflight_checks_all_availability_domains_for_standard_shape() -> None:
         identity_factory=lambda _config: MultiAdIdentity(),
         compute_factory=lambda _config: MultiAdCompute(),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
-        limits_factory=lambda _config: Limits(),
         aidp_factory=lambda _config: Aidp(),
     )
     assert result["inputs"]["availability_domain_index"] == 1
@@ -353,7 +332,6 @@ def test_preflight_accepts_any_available_fault_domain() -> None:
         identity_factory=lambda _config: Identity(),
         compute_factory=lambda _config: FaultDomainCompute(),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
-        limits_factory=lambda _config: Limits(),
         aidp_factory=lambda _config: Aidp(),
     )
     assert result["inputs"]["preferred_vm_shape"] == preflight.E5_SHAPE

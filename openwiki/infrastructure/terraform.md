@@ -1,12 +1,12 @@
 # Terraform and OCI infrastructure
 
-The Terraform package in [`terraform/`](../terraform/) is the deployment backbone for the lab. The current commit history shows repeated fixes around VM networking, OCI bootstrap, capacity selection, AIDP reconciliation, and lab-user management, which means this area is the most operationally sensitive part of the repo.
+The Terraform package in [`terraform/`](../terraform/) is the deployment backbone for release v1.0.0. The current commit history shows repeated fixes around VM networking, OCI bootstrap, capacity selection, AIDP reconciliation, and lab-user management, which means this area is the most operationally sensitive part of the repo.
 
 ## What it provisions
 Based on the root README and the Terraform file structure, the package manages:
 - the OCI network and compute instance used as the registration VM
 - the private `aidp-data-<suffix>` bucket used by the Oracle-managed Object Storage data plane
-- tenancy-level Identity Domains resources such as groups and the registration OAuth application
+- tenancy-level Identity Domains groups, the API-only provisioner user, its data app-role grant, and scoped IAM policies
 - the Oracle AI Data Platform resource and its associated workspace/catalog setup
 - outputs needed by Deploy Studio and the post-apply workflow
 
@@ -38,19 +38,19 @@ The README says Deploy Studio preflight discovers the tenancy home region and ch
 
 Participant provisioning uses external tables over OCI URIs in the one lab bucket. It does not create external AIDP volumes or an explicit OSCS/OpenSearch resource. Developer and provisioner IAM may `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket; AIDP-internal permissions remain the primary authorization layer.
 
-The bucket intentionally omits `kms_key_id`, so OCI encrypts it with an Oracle-managed key. The repository's Vault/KMS resources exist only for the OAuth client secret.
+The bucket intentionally omits `kms_key_id`, so OCI encrypts it with an Oracle-managed key. Release v1.0.0 creates no Vault, KMS key, secret, or OAuth application. Post-apply registers only the VM-generated provisioner public key; the private key remains on the VM and runtime requests are signed through `OCI_CONFIG_FILE`.
 
 ### Safety contracts
-The top-level README also documents two important constraints:
+The top-level README also documents these important constraints:
 - the data bucket is intentionally not auto-deleted when non-empty
 - tenancy-scoped Identity Domains resources use a provider alias pinned to the home region
-- Deploy Studio operator credentials are not copied to the VM; runtime provisioning uses a separate least-privilege API key and does not fall back to an instance principal
+- Deploy Studio operator credentials are not copied to the VM; runtime provisioning uses a separate least-privilege API key and does not fall back to OAuth or an instance principal
 
 ## What to watch when editing
 - Keep `terraform/deploy-studio.json` and the Terraform schema compatible with Deploy Studio v1.
 - Preserve the single-bucket medallion contract.
 - Treat OCI provider and resource behavior changes as backwards-compatibility risks; they have been the subject of multiple recent fixes.
-- Be careful with identity and Vault changes, since secrets are deliberately split between OCI Vault, state, and local env files.
+- Be careful with Identity Domains signing and API-key rotation: only the public key may leave the VM, while `.env` stores identifiers and the `OCI_CONFIG_FILE` path rather than private-key material.
 
 ## Tests and checks
 The README calls out the main validation sequence:

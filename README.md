@@ -2,11 +2,11 @@
 
 An end-to-end Oracle Cloud Infrastructure laboratory for learning data engineering with Oracle AI Data Platform (AIDP). It deploys an AIDP platform and shared workspace, shared Spark compute, a governed Oracle-managed Object Storage data plane, and a self-service registration application.
 
-Version 2 keeps one private `aidp-data-<suffix>` bucket with `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/` prefixes. Notebooks address these locations with OCI URIs and external tables; the package creates neither external AIDP volumes nor an explicit OSCS/OpenSearch resource. Every participant gets an opaque key that is used for workspace folders and four per-participant schemas. Email addresses never appear in those names.
+Release v1.0.0 keeps one private `aidp-data-<suffix>` bucket with `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/` prefixes. Notebooks address these locations with OCI URIs and external tables; the package creates neither external AIDP volumes nor an explicit OSCS/OpenSearch resource. Every participant gets an opaque key that is used for workspace folders and four per-participant schemas. Email addresses never appear in those names.
 
 The immutable industry and reconciliation phase live in `/Workspace/lab-users/.control/<participant>.json`, outside each participant's `ADMIN` subtree. The visible `lab-manifest.json` is tutorial metadata only; neither it nor the student-writable bucket controls authorization, overwrite behavior, or cleanup scope.
 
-The data bucket uses the default Oracle-managed encryption key. The lab Vault/KMS key protects only the Identity Domains OAuth secret; it is not assigned to Object Storage.
+The data bucket uses the default Oracle-managed encryption key. The lab creates no OCI Vault, KMS key, or OAuth client: Identity Domains requests are signed with the dedicated provisioner's API key, whose private key remains on the VM.
 
 ## Participant data kits
 
@@ -41,14 +41,14 @@ Registration first creates or reconciles the Identity Domains user in the pendin
 - Deploy Studio operator credentials are never copied into the repository or VM. The deployed service uses its own least-privilege API key; the OCI-local profile bind-mounts a sanitized config and the original operator key read-only and never copies or prints the private key.
 - Oracle forbids API keys on formal Identity Domains users with `serviceUser=true`. The provisioner therefore uses descriptive `user_type="Service"` with the formal service-user flag omitted, no password, no console access, and API keys as its only enabled credential type.
 - The administrator password and registration code reach Terraform only as PBKDF2 hashes. Lab users activate their own Identity Domains password from the standard OCI welcome email.
-- The Identity Domains OAuth client secret is written to OCI Vault. It remains sensitive in Resource Manager state because the provider returns it when the app is created; restrict access to the stack and its state.
+- Cloud-init generates the provisioner API private key under `/opt/aidp-lab/.oci`; post-apply registers only its public key with Identity Domains. The private key is mounted read-only at `/etc/aidp-lab/oci`, never leaves the VM, and is not stored in Terraform state, metadata, Object Storage, or Vault.
 - Participant and developer access is granted through AIDP RBAC, not broad OCI IAM. The provisioner is the only runtime principal with the administrative AIDP permissions listed above.
-- The runtime uses the mounted API-key config and does not fall back to an instance principal. The generated OCI-local config contains only non-secret API metadata and points to the read-only mounted key.
-- The v2 path has no explicit OSCS/OpenSearch deployment and no external AIDP volumes.
+- The runtime signs both Identity Domains and AIDP requests with the mounted provisioner API-key config selected by `OCI_CONFIG_FILE`; it does not fall back to an instance principal. The VM `.env` contains runtime configuration and PBKDF2 hashes, but no private key, OAuth secret, or plaintext administrator credential.
+- The v1.0.0 path has no explicit OSCS/OpenSearch deployment and no external AIDP volumes.
 - The Default Identity Domain must enable **Access Signing Certificate** so AIDP's API Gateway can read the domain's public JWK. Deploy Studio preflight fails before provisioning when this prerequisite is disabled.
 - OCI Provider 8.21 does not expose `force_destroy`; its native delete refuses a non-empty data bucket, preventing automatic lab-data deletion.
 - The HTTPS certificate is self-signed and includes the public IP/FQDN as SANs, so browsers will show a trust warning.
-- Tenancy-level IAM and Identity Domains resources use an OCI provider alias pinned to the tenancy home region; regional AIDP, Compute, Networking, Object Storage, KMS, and Vault resources continue to use the deployment region.
+- Tenancy-level IAM and Identity Domains resources use an OCI provider alias pinned to the tenancy home region; regional AIDP, Compute, Networking, and Object Storage resources continue to use the deployment region.
 
 ## Local application
 
@@ -57,13 +57,13 @@ docker build -f docker/Dockerfile -t aidp-lab .
 docker run --rm -p 8080:80 -p 8443:443 --env-file .env aidp-lab
 ```
 
-Required runtime values are documented in `apps/backend/.env.example`. They include `OCI_CONFIG_FILE=/etc/aidp-lab/oci/config`, `OBJECTSTORAGE_NAMESPACE`, and `BUCKET_NAME`. For development only, a plaintext OAuth secret may be supplied through `IDENTITY_OAUTH_CLIENT_SECRET`; deployed OCI continues to read that OAuth secret from `OAUTH_SECRET_OCID`.
+Required runtime values are documented in `apps/backend/.env.example`. They include `IDENTITY_DOMAIN_URL`, `OCI_CONFIG_FILE=/etc/aidp-lab/oci/config`, `OBJECTSTORAGE_NAMESPACE`, and `BUCKET_NAME`. Identity and AIDP use the API-key profile referenced by `OCI_CONFIG_FILE`; there is no OAuth secret setting.
 
-`GET /api/health` is strict: missing runtime configuration, an unusable Identity Domains client, a failed technical signature, or inaccessible required AIDP workspace/catalog/compute or exact data bucket returns `503`. It returns `200 {"status":"ok"}` only when those registration dependencies are usable; upstream details and secrets are never returned.
+`GET /api/health` is strict: missing runtime configuration, a failed signed Identity Domains query, or an inaccessible required AIDP workspace/catalog/compute or exact data bucket returns `503`. It returns `200 {"status":"ok"}` only when those registration dependencies are usable; upstream details and credentials are never returned.
 
 ### Local VM-equivalent profile
 
-The development profile runs the same nginx, FastAPI and React image as the VM, but substitutes Identity Domains with in-memory users. It is intentionally local-only and cannot validate OCI policies, Vault access or AIDP permissions.
+The development profile runs the same nginx, FastAPI and React image as the VM, but substitutes Identity Domains with in-memory users. It is intentionally local-only and cannot validate OCI policies, API signing, or AIDP permissions.
 
 ```powershell
 Copy-Item .env.example .env.dev
@@ -94,7 +94,7 @@ terraform init -backend=false
 terraform validate
 ```
 
-The v2.0.1 preflight accepts only the trusted repository and immutable release SHA in `us-chicago-1`, while keeping the compartment name as the editable Deploy Studio input. Names follow OCI's 1-100 character alphanumeric, period, hyphen, and underscore contract. In `new` mode validation confirms that the exact name is available to create; in `existing` mode it confirms one unambiguous ACTIVE compartment. It also rejects forbidden infrastructure and policies, requires the Default Identity Domain public JWK, two available virtual Vault slots, no conflicting AIDP work request for the selected name, and current VM capacity. For a saved Terraform plan, run `python terraform/release_gate.py --plan-json <plan.json>`; it fails unless every managed resource action is create-only.
+The v1.0.0 preflight accepts only the trusted repository and immutable release SHA in `us-chicago-1`, while keeping the compartment name as the editable Deploy Studio input. Names follow OCI's 1-100 character alphanumeric, period, hyphen, and underscore contract. In `new` mode validation confirms that the exact name is available to create; in `existing` mode it confirms one unambiguous ACTIVE compartment. It also rejects forbidden infrastructure and policies, requires the Default Identity Domain public JWK, rejects conflicting AIDP work requests for the selected name, and checks current VM capacity. For a saved Terraform plan, run `python terraform/release_gate.py --plan-json <plan.json>`; it fails unless every managed resource action is create-only.
 
 Deploy Studio manifest v1 currently has no hook between Resource Manager PLAN and its automatic APPLY, and it does not pass the plan JSON to repository preflight. Therefore the create-only plan check is available for manual/CI validation but cannot be enforced by this repository inside the current CloudTechNext PLAN/APPLY sequence. Do not start a lab APPLY until that explicit plan check has passed or CloudTechNext adds a post-plan/pre-apply hook.
 

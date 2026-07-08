@@ -1,4 +1,4 @@
-# Improvement Log - codex-oci-aidp-cloud-migration-lab
+# Improvement Log - oci-aidp-cloud-migration-lab
 
 Use this file for evidence-backed harness improvements in this repo.
 
@@ -25,3 +25,5 @@ Keep entries short. Record real friction, recurring overhead, or meaningful impr
 | 2026-07-07 | Lab v2 participant reconciliation | Participant-writable storage cannot be the authority for immutable industry or exact cleanup | A participant with bucket object management could alter the public manifest before a retry or delete | Keep authoritative participant state in provisioner-only `/Workspace/lab-users/.control`; treat the visible manifest as descriptive | local AGENTS | resolved |
 | 2026-07-07 | Lab v2 frontend validation | Regex-only source assertions did not exercise polling deadlines, `Retry-After`, aborts, or users behind shared NAT | Executable polling tests exposed behavior that static checks could not prove; an nginx per-IP limiter would throttle unrelated students | Keep the small pure polling helper and executable tests; rate-limit invalid codes by IP and valid reconciliations by opaque email key | local AGENTS | resolved |
 | 2026-07-07 | Lab v2 architecture preflight | A second concurrent preflight overwrote the saved Sentrux baseline | The baseline timestamp and quality signal changed before postflight despite no intentional baseline reset | Make baseline capture single-owner or write-once per task and require explicit approval before restoring a user baseline | script | proposed |
+| 2026-07-07 | Release v1.0.0 credential cleanup | Nested Python bytecode entered the Docker context and retained obsolete OAuth strings | The final image scan found `app/__pycache__/*.pyc` even though top-level cache names were ignored | Exclude nested `__pycache__`, `*.py[cod]`, and pytest caches; keep the image credential/cache scan in release validation | none | resolved |
+| 2026-07-07 | Release v1.0.0 architecture gate | Sentrux printed `DEGRADED` while returning exit code 0, so the wrapper continued | First postflight reported complex functions `2 -> 3` but still printed completion | Make `arch-postflight.ps1` fail on either nonzero exit or textual `DEGRADED` | script | resolved |

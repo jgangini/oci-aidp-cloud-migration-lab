@@ -52,25 +52,23 @@ resource "oci_core_instance" "lab" {
 
   metadata = {
     user_data = base64encode(templatefile("${path.module}/templatefile/user_data.sh", {
-      admin_username           = var.admin_username
-      admin_password_hash      = var.admin_password_hash
-      registration_code_hash   = var.registration_code_hash
-      identity_domain_url      = local.default_domain.url
-      identity_oauth_client_id = oci_identity_domains_app.registration.name
-      oauth_secret_ocid        = oci_vault_secret.oauth_client.id
-      developer_group_id       = oci_identity_domains_group.developers.id
-      pending_group_id         = oci_identity_domains_group.pending.id
-      provisioner_user_ocid    = oci_identity_domains_user.provisioner.ocid
-      tenancy_ocid             = var.tenancy_ocid
-      objectstorage_namespace  = var.objectstorage_namespace
-      bucket_name              = oci_objectstorage_bucket.data.name
-      aidp_workbench_url       = local.aidp_workbench_url
-      aidp_platform_id         = oci_ai_data_platform_ai_data_platform.lab.id
-      aidp_workspace_name      = oci_ai_data_platform_ai_data_platform.lab.default_workspace_name
-      aidp_region              = var.region
-      lab_marker               = local.name_prefix
-      source_repo_url          = var.source_repository_url
-      source_commit_sha        = var.source_commit_sha
+      admin_username          = var.admin_username
+      admin_password_hash     = var.admin_password_hash
+      registration_code_hash  = var.registration_code_hash
+      identity_domain_url     = local.default_domain.url
+      developer_group_id      = oci_identity_domains_group.developers.id
+      pending_group_id        = oci_identity_domains_group.pending.id
+      provisioner_user_ocid   = oci_identity_domains_user.provisioner.ocid
+      tenancy_ocid            = var.tenancy_ocid
+      objectstorage_namespace = var.objectstorage_namespace
+      bucket_name             = oci_objectstorage_bucket.data.name
+      aidp_workbench_url      = local.aidp_workbench_url
+      aidp_platform_id        = oci_ai_data_platform_ai_data_platform.lab.id
+      aidp_workspace_name     = oci_ai_data_platform_ai_data_platform.lab.default_workspace_name
+      aidp_region             = var.region
+      lab_marker              = local.name_prefix
+      source_repo_url         = var.source_repository_url
+      source_commit_sha       = var.source_commit_sha
     }))
   }
 
@@ -96,16 +94,6 @@ resource "oci_identity_dynamic_group" "vm" {
   name           = "${local.name_prefix}-vm"
   description    = "Instance principal for the AIDP lab registration VM"
   matching_rule  = "ALL {instance.id = '${oci_core_instance.lab.id}'}"
-}
-
-resource "oci_identity_policy" "vm_secret" {
-  provider       = oci.home
-  compartment_id = var.tenancy_ocid
-  name           = "${local.name_prefix}-vm-secret"
-  description    = "Allow only the lab VM to read its OAuth secret"
-  statements = [
-    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to read secret-bundles in compartment id ${local.target_compartment} where target.secret.id = '${oci_vault_secret.oauth_client.id}'"
-  ]
 }
 
 resource "oci_identity_policy" "vm_run_command" {

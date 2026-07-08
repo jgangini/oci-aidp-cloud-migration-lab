@@ -12,7 +12,19 @@ try {
         if (Test-Path ".\.sentrux\rules.toml") {
             sentrux check .
         }
-        sentrux gate .
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $gateOutput = @(sentrux gate . 2>&1)
+            $gateExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        $gateOutput | ForEach-Object { Write-Host $_ }
+        if ($gateExitCode -ne 0 -or $gateOutput -match "DEGRADED") {
+            throw "Sentrux gate reported architectural degradation."
+        }
     }
     Write-Host "Architecture postflight complete."
 }

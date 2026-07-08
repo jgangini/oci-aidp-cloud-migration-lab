@@ -1,6 +1,6 @@
 # Operations and local run modes
 
-This repository has three operational modes that matter for development and validation.
+Release v1.0.0 has three operational modes that matter for development and validation.
 
 ## 1. Full OCI deployment
 The top-level README describes the Deploy Studio package that provisions OCI resources, creates the VM, and wires Identity Domains and AIDP together. This is the production-like path and the one that matters most for lab operators.
@@ -21,7 +21,7 @@ docker compose -f docker/docker-compose.dev.yml down
 ## 3. OCI-connected local profile
 [`docker/docker-compose.oci-local.yml`](../docker/docker-compose.oci-local.yml) runs the same image against live OCI resources on localhost-only ports. It is intentionally not a replacement for the VM.
 
-The bootstrap helper [`scripts/bootstrap_local_oci_env.py`](../scripts/bootstrap_local_oci_env.py) discovers the live lab resources and writes a local `.env` without printing secrets. It can also self-check its env rendering and secret escaping behavior.
+The bootstrap helper [`scripts/bootstrap_local_oci_env.py`](../scripts/bootstrap_local_oci_env.py) discovers the live lab resources and writes a local `.env` without printing credentials. It can also self-check its env rendering and escaping behavior.
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\bootstrap_local_oci_env.py --config <oci-config> --key <oci-key.pem>
@@ -29,7 +29,7 @@ docker compose --env-file .env -f docker/docker-compose.oci-local.yml config --q
 docker compose --env-file .env -f docker/docker-compose.oci-local.yml up --build --detach
 ```
 
-The generated `.env` includes `OCI_CONFIG_FILE=/etc/aidp-lab/oci/config`, `OBJECTSTORAGE_NAMESPACE`, `BUCKET_NAME`, and two host paths used only for Compose binds. The helper also writes a sanitized, non-secret `.tmp/oci-local/<suffix>/config` whose `key_file` points inside the container. Compose mounts that config and the original operator key as read-only files; it never copies or prints the private key. The container authenticates with that config and has no instance-principal fallback. OCI-local rejects a config passphrase instead of copying it, so use a dedicated unencrypted API key.
+The generated `.env` includes `IDENTITY_DOMAIN_URL`, `OCI_CONFIG_FILE=/etc/aidp-lab/oci/config`, `OBJECTSTORAGE_NAMESPACE`, `BUCKET_NAME`, and two host paths used only for Compose binds. The helper also writes a sanitized, non-secret `.tmp/oci-local/<suffix>/config` whose `key_file` points inside the container. Compose mounts that config and the original operator key as read-only files; it never copies or prints the private key. Identity Domains and AIDP requests are signed with that profile; the container has no OAuth or instance-principal fallback. OCI-local rejects a config passphrase instead of copying it, so use a dedicated unencrypted API key.
 
 ## Operational scripts
 - [`scripts/arch-preflight.ps1`](../scripts/arch-preflight.ps1) — preflight checks before substantial changes
@@ -42,7 +42,7 @@ The repo root README says the architecture scripts should bracket non-trivial ed
 - Do not use the OCI-connected local profile as a substitute for the VM; it has no restart policy and binds only to `127.0.0.1`.
 - Never commit generated `.env` files, keys, state, or certificates.
 - `.tmp/` is ignored because it holds only the generated non-secret OCI-local config; the original private key remains at the operator-supplied path.
-- The local development profile uses sample hashes and fake users; it does not validate real OCI IAM or Vault access.
+- The local development profile uses sample hashes and fake users; it does not validate real OCI IAM or API signing.
 - The HTTPS endpoints are self-signed in the lab environment, so browser trust warnings are expected.
 
 ## Useful checks

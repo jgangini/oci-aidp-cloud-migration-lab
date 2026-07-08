@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
-import time
+import threading
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 import httpx
+from oci._vendor import requests
 
 from .config import Settings
 
@@ -42,67 +42,57 @@ class RegistrationResult:
     was_developer: bool = False
 
 
-def read_oauth_secret(settings: Settings) -> str:
-    if settings.identity_oauth_client_secret:
-        return settings.identity_oauth_client_secret
-    if not settings.oauth_secret_ocid:
-        raise RuntimeError("OAUTH_SECRET_OCID is not configured")
-    import oci
-
-    signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
-    client = oci.secrets.SecretsClient(config={}, signer=signer)
-    bundle = client.get_secret_bundle(settings.oauth_secret_ocid).data
-    content = bundle.secret_bundle_content.content
-    return base64.b64decode(content).decode()
-
-
 class IdentityClient:
-    def __init__(self, settings: Settings, *, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         self.settings = settings
-        self.client = client or httpx.AsyncClient(timeout=30)
-        self._token: str | None = None
-        self._token_refresh_at = 0.0
+        self.client = client or requests.Session()
+        self._async_test_client = isinstance(client, httpx.AsyncClient)
+        self._session_lock = threading.Lock()
+        self.signer: Any | None = None
+        if client is None:
+            import oci
+
+            config = oci.config.from_file(settings.oci_config_file, "DEFAULT")
+            self.signer = oci.signer.Signer(
+                tenancy=config["tenancy"],
+                user=config["user"],
+                fingerprint=config["fingerprint"],
+                private_key_file_location=config["key_file"],
+                pass_phrase=config.get("pass_phrase"),
+            )
 
     async def close(self) -> None:
-        await self.client.aclose()
+        if self._async_test_client:
+            await self.client.aclose()
+            return
+        await asyncio.to_thread(self.client.close)
 
-    async def _access_token(self) -> str:
-        if self._token and time.monotonic() < self._token_refresh_at:
-            return self._token
-        secret = read_oauth_secret(self.settings)
-        response = await self.client.post(
-            f"{self.settings.identity_domain_url}/oauth2/v1/token",
-            auth=(self.settings.identity_oauth_client_id, secret),
-            data={"grant_type": "client_credentials", "scope": "urn:opc:idm:__myscopes__"},
-            headers={"Accept": "application/json"},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        self._token = str(payload["access_token"])
-        try:
-            expires_in = float(payload.get("expires_in", 300))
-        except (TypeError, ValueError):
-            expires_in = 300
-        if expires_in <= 0:
-            expires_in = 300
-        refresh_skew = min(30.0, expires_in * 0.1)
-        self._token_refresh_at = time.monotonic() + max(1.0, expires_in - refresh_skew)
-        return self._token
-
-    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    def _request_sync(self, method: str, path: str, **kwargs: Any) -> Any:
         extra_headers = kwargs.pop("headers", {})
-        for attempt in range(2):
-            token = await self._access_token()
-            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-            headers.update(extra_headers)
-            response = await self.client.request(
-                method, f"{self.settings.identity_domain_url}{path}", headers=headers, **kwargs
+        request_kwargs = {
+            **kwargs,
+            "headers": {"Accept": "application/json", **extra_headers},
+            "timeout": 30,
+        }
+        if self.signer is not None:
+            request_kwargs["auth"] = self.signer
+        with self._session_lock:
+            return self.client.request(
+                method,
+                f"{self.settings.identity_domain_url}{path}",
+                **request_kwargs,
             )
-            if response.status_code != 401 or attempt == 1:
-                return response
-            self._token = None
-            self._token_refresh_at = 0.0
-        raise RuntimeError("unreachable Identity request state")
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        if self._async_test_client:
+            extra_headers = kwargs.pop("headers", {})
+            return await self.client.request(
+                method,
+                f"{self.settings.identity_domain_url}{path}",
+                headers={"Accept": "application/json", **extra_headers},
+                **kwargs,
+            )
+        return await asyncio.to_thread(self._request_sync, method, path, **kwargs)
 
     async def find_user(self, email: str) -> dict[str, Any] | None:
         literal = _scim_literal(email)
@@ -152,7 +142,7 @@ class IdentityClient:
                     ]
                 },
             )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, requests.exceptions.RequestException) as exc:
             raise IdentityPending("User exists; activation email initiation is still in progress") from exc
         if response.status_code in {200, 201, 204, 409}:
             return
@@ -205,7 +195,7 @@ class IdentityClient:
             return await self._prepare_registration(name, email)
         except (IdentityConflict, IdentityPending, IdentityRejected):
             raise
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, requests.exceptions.RequestException) as exc:
             raise IdentityPending("Identity Domains is still reconciling this registration") from exc
 
     async def _prepare_registration(self, name: str, email: str) -> RegistrationResult:
@@ -422,7 +412,7 @@ def _user_coordinates(user: dict[str, Any]) -> tuple[str, str]:
     return user_id, user_ocid
 
 
-def _safe_error(response: httpx.Response) -> str:
+def _safe_error(response: Any) -> str:
     try:
         payload = response.json()
         return str(payload.get("detail") or payload.get("message") or "Identity Domains rejected the request")

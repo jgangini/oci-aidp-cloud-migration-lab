@@ -89,8 +89,6 @@ def make_client(tmp_path: Path, mode: str = "active") -> TestClient:
         admin_password_hash=hash_secret("long-admin-password", iterations=1_000, salt=b"admin-test-salt"),
         registration_code_hash=hash_secret("ABCD-1234", iterations=1_000, salt=b"code-test-salt"),
         identity_domain_url="https://identity.example.test",
-        identity_oauth_client_id="client",
-        identity_oauth_client_secret="test-only",
         developer_group_id="developers",
         pending_group_id="pending",
         aidp_workbench_url="https://example.datalake.oci.oraclecloud.com#?tenant=test&domain=Default",
@@ -172,7 +170,7 @@ def test_identity_demotion_pending_never_calls_aidp(tmp_path: Path) -> None:
     assert response.json()["phase"] == "identity"
 
 
-def test_health_requires_usable_oauth_identity_operation(tmp_path: Path) -> None:
+def test_health_requires_usable_signed_identity_operation(tmp_path: Path) -> None:
     healthy = make_client(tmp_path / "healthy").get("/api/health")
     unhealthy = make_client(tmp_path / "unhealthy", "health-fail").get("/api/health")
     aidp_unhealthy = make_client(tmp_path / "aidp-unhealthy", "health-fail-aidp").get("/api/health")
@@ -410,11 +408,19 @@ def test_https_profile_keeps_the_host_cookie_prefix(tmp_path: Path) -> None:
     assert "Secure" in response.headers["set-cookie"]
 
 
-def test_default_identity_client_is_singleton_and_closes(tmp_path: Path) -> None:
+def test_default_identity_client_is_singleton_and_closes(tmp_path: Path, monkeypatch) -> None:
+    class ClosingIdentity:
+        def __init__(self, settings: Settings) -> None:
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("app.main.IdentityClient", ClosingIdentity)
     settings = make_client(tmp_path).app.state.settings
     app = create_app(settings)
     with TestClient(app):
         first = app.state.identity_factory()
         second = app.state.identity_factory()
         assert first is second
-    assert first.client.is_closed
+    assert first.closed

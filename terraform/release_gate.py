@@ -13,7 +13,7 @@ EXPECTED_REPOSITORIES = {
     "https://github.com/jgangini/oci-aidp-cloud-migration-lab",
     "https://github.com/jgangini/oci-aidp-cloud-migration-lab.git",
 }
-EXPECTED_REF = "v2.0.1"
+EXPECTED_REF = "v1.0.0"
 EXPECTED_REGION = "us-chicago-1"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -34,6 +34,14 @@ _SOURCE_PATTERNS = (
             r"resource\s+\"oci_ai_data_platform[^\"]*volume[^\"]*\"",
             re.IGNORECASE,
         ),
+    ),
+    (
+        "OCI Vault or customer-managed KMS resource",
+        re.compile(r'resource\s+"(?:oci_kms_|oci_vault_)[^"]+"', re.IGNORECASE),
+    ),
+    (
+        "Identity Domains OAuth client",
+        re.compile(r'resource\s+"oci_identity_domains_app"', re.IGNORECASE),
     ),
     ("optional VNIC policy", re.compile(r"\bmanage\s+vnics\b", re.IGNORECASE)),
     ("optional subnet policy", re.compile(r"\buse\s+subnets\b", re.IGNORECASE)),
@@ -126,6 +134,16 @@ def _planned_values(resource: dict[str, Any]) -> dict[str, Any]:
     return after if isinstance(after, dict) else {}
 
 
+def _forbidden_plan_type(resource_type: str) -> str | None:
+    if resource_type.startswith(("oci_kms_", "oci_vault_")):
+        return "OCI Vault or customer-managed KMS resource"
+    if resource_type == "oci_identity_domains_app":
+        return "Identity Domains OAuth client"
+    if "ai_data_platform" in resource_type and "volume" in resource_type:
+        return "external AIDP volume"
+    return None
+
+
 def validate_plan(plan: dict[str, Any]) -> None:
     managed = [change for change in plan.get("resource_changes") or [] if change.get("mode", "managed") == "managed"]
     if not managed:
@@ -140,14 +158,15 @@ def validate_plan(plan: dict[str, Any]) -> None:
         if finding:
             raise ValueError(f"release plan contains {finding} in {address}")
         resource_type = str(resource.get("type") or "").lower()
-        if "ai_data_platform" in resource_type and "volume" in resource_type:
-            raise ValueError(f"release plan contains an external AIDP volume in {address}")
+        forbidden_type = _forbidden_plan_type(resource_type)
+        if forbidden_type:
+            raise ValueError(f"release plan contains {forbidden_type} in {address}")
         if resource_type == "oci_objectstorage_bucket" and _has_nonempty_key(_planned_values(resource), "kms_key_id"):
             raise ValueError(f"release plan assigns a customer-managed key to {address}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate the immutable fresh-only v2 AIDP lab release contract.")
+    parser = argparse.ArgumentParser(description="Validate the immutable fresh-only v1.0.0 AIDP lab release contract.")
     parser.add_argument("--source-root", type=Path, default=Path(__file__).parent)
     parser.add_argument("--context-json", type=Path)
     parser.add_argument("--plan-json", type=Path)

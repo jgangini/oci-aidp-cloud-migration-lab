@@ -24,7 +24,7 @@ def _context() -> dict[str, object]:
         "compartment_mode": "new",
         "source": {
             "repository": "https://github.com/jgangini/oci-aidp-cloud-migration-lab.git",
-            "ref": "v2.0.1",
+            "ref": "v1.0.0",
             "commit_sha": "0123456789abcdef0123456789abcdef01234567",
         },
     }
@@ -53,11 +53,11 @@ def _plan(*, actions: list[str] | None = None, resource_type: str = "oci_core_in
     }
 
 
-def test_context_requires_exact_v201_source() -> None:
+def test_context_requires_exact_v100_source() -> None:
     release_gate.validate_context(_context())
     invalid = _context()
     invalid["source"] = {**invalid["source"], "ref": "main"}  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="v2.0.1"):
+    with pytest.raises(ValueError, match="v1.0.0"):
         release_gate.validate_context(invalid)
 
 
@@ -112,6 +112,8 @@ def test_context_rejects_untrusted_repository_and_short_sha() -> None:
     [
         ('resource "oci_opensearch_opensearch_cluster" "bad" {}', "OSCS/OpenSearch"),
         ('payload = { volumeType = "EXTERNAL" }', "external AIDP volume"),
+        ('resource "oci_kms_vault" "bad" {}', "OCI Vault"),
+        ('resource "oci_identity_domains_app" "bad" {}', "OAuth client"),
         ('statement = "Allow any-user to manage vnics in tenancy"', "VNIC"),
         ('statement = "Allow any-user to use subnets in tenancy"', "subnet"),
         ('statement = "Allow any-user to use network-security-groups in tenancy"', "NSG"),
@@ -151,6 +153,14 @@ def test_plan_accepts_only_create_actions() -> None:
 def test_plan_rejects_forbidden_resource_and_customer_managed_bucket_key() -> None:
     with pytest.raises(ValueError, match="OSCS/OpenSearch"):
         release_gate.validate_plan(_plan(resource_type="oci_opensearch_opensearch_cluster"))
+    for resource_type, message in (
+        ("oci_kms_vault", "OCI Vault"),
+        ("oci_kms_key", "OCI Vault"),
+        ("oci_vault_secret", "OCI Vault"),
+        ("oci_identity_domains_app", "OAuth client"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            release_gate.validate_plan(_plan(resource_type=resource_type))
     bucket_plan = _plan(resource_type="oci_objectstorage_bucket")
     bucket_plan["resource_changes"][0]["change"]["after"]["kms_key_id"] = "ocid1.key.oc1..test"  # type: ignore[index]
     with pytest.raises(ValueError, match="customer-managed"):

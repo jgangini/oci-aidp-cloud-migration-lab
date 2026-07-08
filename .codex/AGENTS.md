@@ -1,4 +1,4 @@
-# Local Codex Policy for codex-oci-aidp-cloud-migration-lab
+# Local Codex Policy for oci-aidp-cloud-migration-lab
 
 This file supplements the global `~/.codex/AGENTS.md`.
 
@@ -6,7 +6,7 @@ Keep this file repo-specific. Do not duplicate universal rules that already live
 
 ## Project Identity
 
-- Repo root: `D:\dev\codex-oci-aidp-cloud-migration-lab`
+- Repo root: `D:\dev\oci-aidp-cloud-migration-lab`
 - Purpose: Deploy Studio-owned OCI AI Data Platform migration laboratory.
 - Technical audience: OCI platform engineers and lab instructors.
 - Primary surfaces: Terraform, AIDP post-apply REST hook, FastAPI registration API, React admin/registration UI, nginx/Docker.
@@ -25,10 +25,11 @@ Keep this file repo-specific. Do not duplicate universal rules that already live
 
 ## Repo-Specific Friction
 
-- Sensitive paths or fragile areas: `terraform/h_oci_identity.tf`, `terraform/hooks/post_apply.py`, SCIM filters, cloud-init, Vault secret wiring.
+- Sensitive paths or fragile areas: `terraform/h_oci_identity.tf`, `terraform/hooks/post_apply.py`, SCIM filters, cloud-init, and provisioner API-key rotation.
 - Credentials, external systems, or approval boundaries: OCI config/key and plaintext lab secrets never enter Git, Terraform variables, artifacts, or VM metadata.
 - Noisy, slow, or expensive commands to avoid by default: live OCI APPLY and Identity Domains mutations; use provider mocks and HTTP fakes first.
 - Before a live AIDP APPLY, require the Default Identity Domain's **Access Signing Certificate** setting; do not bypass the repository preflight because a closed public JWK leaves AIDP retrying OSCS configuration.
+- Identity Domains uses the dedicated provisioner's API key from `OCI_CONFIG_FILE`; do not introduce an OAuth client, Vault secret, or instance-principal fallback.
 - A manual AIDP platform must have its own stable 9-statement required policy. Never rely on a policy owned by another Terraform stack; VNIC, subnet, NSG, and Object Storage service deletion permissions remain optional.
 
 ## Continuous Improvement Triggers

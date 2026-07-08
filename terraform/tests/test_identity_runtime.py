@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -45,18 +46,40 @@ def test_provisioner_group_and_iam_are_exactly_scoped() -> None:
     assert "manage ai-data-platforms" not in policy
 
 
+def test_provisioner_uses_api_signing_without_oauth_or_vault() -> None:
+    identity = (ROOT / "terraform/h_oci_identity.tf").read_text(encoding="utf-8")
+    compute = (ROOT / "terraform/g_oci_core_instance.tf").read_text(encoding="utf-8")
+    grant = _resource(identity, "oci_identity_domains_grant", "provisioner_user_admin")
+
+    assert 'grant_mechanism = "ADMINISTRATOR_TO_USER"' in grant
+    assert 'type  = "User"' in grant
+    assert "value = oci_identity_domains_user.provisioner.id" in grant
+    assert 'resource "oci_identity_domains_app"' not in identity
+    assert 'resource "oci_kms_' not in identity
+    assert 'resource "oci_vault_' not in identity
+    assert 'resource "oci_identity_policy" "vm_secret"' not in compute
+    assert "secret-bundles" not in compute
+
+
 def test_vm_generates_and_mounts_only_local_api_credentials() -> None:
     compute = (ROOT / "terraform/g_oci_core_instance.tf").read_text(encoding="utf-8")
     cloud_init = (ROOT / "terraform/templatefile/user_data.sh").read_text(encoding="utf-8")
 
     assert "vm_aidp_runtime" not in compute
     assert "manage datalake" not in compute
-    assert "provisioner_user_ocid    = oci_identity_domains_user.provisioner.ocid" in compute
+    assert re.search(
+        r"provisioner_user_ocid\s*=\s*oci_identity_domains_user\.provisioner\.ocid",
+        compute,
+    )
     assert 'OCI_DIR="/opt/aidp-lab/.oci"' in cloud_init
     assert 'install -d -m 0700 "$TLS_DIR" "$STATE_DIR" "$OCI_DIR"' in cloud_init
     assert 'openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048' in cloud_init
     assert 'chmod 0600 "$OCI_DIR/key.pem" "$OCI_DIR/config"' in cloud_init
     assert 'OCI_CONFIG_FILE=/etc/aidp-lab/oci/config' in cloud_init
+    assert 'cat > /opt/aidp-lab/.env' in cloud_init
+    assert '--env-file /opt/aidp-lab/.env' in cloud_init
+    assert "IDENTITY_OAUTH" not in cloud_init
+    assert "OAUTH_SECRET" not in cloud_init
     assert '"$OCI_DIR:/etc/aidp-lab/oci:ro,Z"' in cloud_init
     assert '[ "$HEALTH_STATUS" = "200" ] || [ "$HEALTH_STATUS" = "503" ]' in cloud_init
 

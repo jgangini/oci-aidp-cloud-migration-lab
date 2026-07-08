@@ -160,13 +160,15 @@ def test_runtime_security_contracts() -> None:
     assert 'resource "oci_identity_domains_group" "provisioner"' in identity
     assert "value = oci_identity_domains_user.provisioner.id" in identity
     assert identity.count('resource "oci_identity_domains_grant"') == 1
+    assert 'grant_mechanism = "ADMINISTRATOR_TO_USER"' in identity
+    assert 'type  = "User"' in identity
     assert 'app_role_filter = "displayName eq \\"User Administrator\\""' in identity
     assert "API Key Administrator" not in identity
     assert aidp.count("oci.home") == 1
-    assert 'resource "time_sleep" "kms_endpoint"' in identity
-    assert 'create_duration = "420s"' in identity
-    assert "depends_on          = [time_sleep.kms_endpoint]" in identity
-    assert "vault_id = oci_kms_vault.lab.id" in identity
+    assert 'resource "oci_identity_domains_app"' not in identity
+    assert 'resource "oci_kms_' not in identity
+    assert 'resource "oci_vault_' not in identity
+    assert 'resource "time_sleep"' not in identity
     assert 'resource "oci_objectstorage_object"' not in storage
     assert 'web_socket_endpoint == null ? "" : oci_ai_data_platform_ai_data_platform.lab.web_socket_endpoint' in aidp
     network = (root / "terraform/e_oci_core_vcn.tf").read_text(encoding="utf-8")

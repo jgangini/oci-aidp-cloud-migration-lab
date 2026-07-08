@@ -137,13 +137,11 @@ git -C "$SOURCE_DIR" checkout --detach "$SOURCE_COMMIT_SHA"
 test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$SOURCE_COMMIT_SHA"
 use_reachable_base_images
 
-cat > /opt/aidp-lab/app.env <<'EOF'
+cat > /opt/aidp-lab/.env <<'EOF'
 ADMIN_USERNAME=${admin_username}
 ADMIN_PASSWORD_HASH=${admin_password_hash}
 REGISTRATION_CODE_HASH=${registration_code_hash}
 IDENTITY_DOMAIN_URL=${identity_domain_url}
-IDENTITY_OAUTH_CLIENT_ID=${identity_oauth_client_id}
-OAUTH_SECRET_OCID=${oauth_secret_ocid}
 IDENTITY_DEVELOPER_GROUP_ID=${developer_group_id}
 IDENTITY_PENDING_GROUP_ID=${pending_group_id}
 AIDP_WORKBENCH_URL=${aidp_workbench_url}
@@ -158,14 +156,14 @@ LAB_MARKER=${lab_marker}
 SESSION_SECRET_FILE=/var/lib/aidp-lab/session.key
 COOKIE_SECURE=true
 EOF
-chmod 0600 /opt/aidp-lab/app.env
+chmod 0600 /opt/aidp-lab/.env
 
 retry 5 docker build -f "$SOURCE_DIR/docker/Dockerfile" -t "$LOCAL_IMAGE" "$SOURCE_DIR"
 docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$APP_NAME" \
   --restart unless-stopped \
-  --env-file /opt/aidp-lab/app.env \
+  --env-file /opt/aidp-lab/.env \
   -p 80:80 \
   -p 443:443 \
   -v "$TLS_DIR:/etc/aidp-lab/tls:ro,Z" \

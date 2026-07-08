@@ -1,6 +1,6 @@
 # Architecture overview
 
-This repository packages a small web application plus OCI infrastructure around a specific lab workflow: create lab users in Identity Domains, expose the lab console link, and provision the surrounding AI Data Platform resources that make the lab usable.
+Release v1.0.0 packages a small web application plus OCI infrastructure around a specific lab workflow: create lab users in Identity Domains, expose the lab console link, and provision the surrounding AI Data Platform resources that make the lab usable.
 
 ## System pieces
 
@@ -12,12 +12,13 @@ The FastAPI app in [`apps/backend/app/main.py`](../apps/backend/app/main.py) exp
 - keeps the user pending until workspace, schemas, content, permissions, and developer promotion succeed
 - returns only a minimal public config payload and a strict `/api/health` probe
 
-The app is configured through [`apps/backend/app/config.py`](../apps/backend/app/config.py). OCI mode requires Identity Domains, OAuth client, group IDs, AIDP identifiers, `OCI_CONFIG_FILE`, `OBJECTSTORAGE_NAMESPACE`, and `BUCKET_NAME`. Local-only development can use in-memory adapters.
+The app is configured through [`apps/backend/app/config.py`](../apps/backend/app/config.py). OCI mode requires the Identity Domains URL, group IDs, AIDP identifiers, `OCI_CONFIG_FILE`, `OBJECTSTORAGE_NAMESPACE`, and `BUCKET_NAME`. Local-only development can use in-memory adapters.
 
 ### Identity integration
 [`apps/backend/app/identity.py`](../apps/backend/app/identity.py) implements the OCI-facing identity workflow. Important behaviors:
-- OAuth client secrets are loaded from `IDENTITY_OAUTH_CLIENT_SECRET` or from OCI Vault via `OAUTH_SECRET_OCID`
-- the client caches access tokens and retries once after a 401
+- requests are signed with the dedicated provisioner's OCI API key loaded from the `DEFAULT` profile at `OCI_CONFIG_FILE`
+- the VM mounts `/opt/aidp-lab/.oci` read-only at `/etc/aidp-lab/oci`; the private key never enters environment variables or Terraform state
+- OCI SDK request signing replaces the former OAuth client and Vault-secret flow
 - user lookup is based on email/userName, but unmanaged matches are rejected
 - new or reconciled users enter pending before participant resources are created
 - developer membership is added and pending membership removed only after provisioning succeeds
@@ -33,8 +34,8 @@ The frontend in [`apps/frontend/src/App.tsx`](../apps/frontend/src/App.tsx) rend
 
 ### OCI infrastructure
 The Terraform package under [`terraform/`](../terraform/) is what turns the app into a deployable OCI lab:
-- tenancy-scoped Identity Domains resources and secrets
-- regional networking, Compute, Object Storage, KMS, Vault, and AIDP resources
+- tenancy-scoped Identity Domains groups, the API-only provisioner user, and IAM grants
+- regional networking, Compute, Object Storage, and AIDP resources
 - a single Oracle-managed Object Storage data plane with the medallion prefixes called out in the README
 - a registration VM whose bootstrap logic is generated from `templatefile/user_data.sh`
 - post-apply reconciliation for the workspace, catalog, shared compute, root folder, roles, group membership, and permissions
@@ -58,7 +59,7 @@ The repository supports three practical modes:
 3. OCI-connected local testing with `docker/docker-compose.oci-local.yml` and `scripts/bootstrap_local_oci_env.py`
 
 ## Design boundaries
-- Secrets stay out of source control. The repo uses hashes, Vault, ignored env files, and a dedicated least-privilege service API key. There is no instance-principal fallback for AIDP provisioning.
+- Secrets stay out of source control. The repo uses hashes, ignored env files, and a dedicated least-privilege provisioner API key whose private half remains on the VM. There is no OAuth, Vault, or instance-principal fallback for runtime provisioning.
 - The backend is the boundary between browser state and OCI identity state; the frontend never stores secrets in browser storage.
 - OCI-local generates only a sanitized non-secret config and bind-mounts the original operator key read-only.
 - The lab distinguishes managed users from pre-existing Identity Domains accounts, which prevents accidental deletion of unmanaged identities.

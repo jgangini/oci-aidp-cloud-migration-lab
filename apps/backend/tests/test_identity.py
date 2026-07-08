@@ -1,11 +1,95 @@
 import asyncio
 import json
+import threading
 import time
 
 import httpx
 
 from app.config import Settings
 from app.identity import IdentityClient, IdentityConflict, IdentityPending, IdentityRejected, LocalIdentityClient
+
+
+def test_identity_initializes_signer_from_mounted_config(monkeypatch) -> None:
+    import oci
+
+    loaded: list[tuple[str, str]] = []
+    signer_args: list[dict] = []
+
+    class Session:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        oci.config,
+        "from_file",
+        lambda path, profile: (
+            loaded.append((path, profile))
+            or {
+                "tenancy": "tenancy",
+                "user": "user",
+                "fingerprint": "fingerprint",
+                "key_file": "/etc/aidp-lab/oci/key.pem",
+            }
+        ),
+    )
+    monkeypatch.setattr(oci.signer, "Signer", lambda **kwargs: signer_args.append(kwargs) or object())
+    monkeypatch.setattr("app.identity.requests.Session", Session)
+
+    client = IdentityClient(
+        Settings(
+            identity_domain_url="https://identity.example.test",
+            oci_config_file="/etc/aidp-lab/oci/config",
+        )
+    )
+
+    assert loaded == [("/etc/aidp-lab/oci/config", "DEFAULT")]
+    assert signer_args == [
+        {
+            "tenancy": "tenancy",
+            "user": "user",
+            "fingerprint": "fingerprint",
+            "private_key_file_location": "/etc/aidp-lab/oci/key.pem",
+            "pass_phrase": None,
+        }
+    ]
+    asyncio.run(client.close())
+
+
+def test_identity_requests_use_api_signing_off_event_loop_and_serialize_session() -> None:
+    signer = object()
+    main_thread = threading.get_ident()
+
+    class Session:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.calls: list[tuple[int, object, dict[str, str]]] = []
+
+        def request(self, method: str, url: str, **kwargs):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.01)
+                self.calls.append((threading.get_ident(), kwargs.get("auth"), kwargs["headers"]))
+                return httpx.Response(200, json={"Resources": []}, request=httpx.Request(method, url))
+            finally:
+                self.active -= 1
+
+        def close(self) -> None:
+            return None
+
+    async def run() -> None:
+        session = Session()
+        client = IdentityClient(Settings(identity_domain_url="https://identity.example.test"), client=session)
+        client.signer = signer
+        await asyncio.gather(client.healthcheck(), client.healthcheck())
+        await client.close()
+        assert session.max_active == 1
+        assert all(thread_id != main_thread for thread_id, _, _ in session.calls)
+        assert all(auth is signer for _, auth, _ in session.calls)
+        assert all("Authorization" not in headers for _, _, headers in session.calls)
+
+    asyncio.run(run())
 
 
 def test_group_user_listing_paginates() -> None:
@@ -31,11 +115,9 @@ def test_group_user_listing_paginates() -> None:
         transport = httpx.MockTransport(handler)
         http = httpx.AsyncClient(transport=transport)
         client = IdentityClient(
-            Settings(identity_domain_url="https://identity.example.test", identity_oauth_client_id="client"),
+            Settings(identity_domain_url="https://identity.example.test"),
             client=http,
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         users = await client._users_in_group("group-id")
         assert len(users) == 101
         await client.close()
@@ -60,8 +142,6 @@ def test_identity_domain_rejection_is_safe() -> None:
             Settings(identity_domain_url="https://identity.example.test"),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         try:
             await client.create_user("Ada", "ada@example.com")
         except IdentityRejected as exc:
@@ -95,8 +175,6 @@ def test_prepare_registration_initiates_identity_activation_without_a_password()
             Settings(identity_domain_url="https://identity.example.test", lab_marker="lab"),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         result = await client.prepare_registration("Ada Lovelace", "ada@example.com")
         assert result.user_id == "managed-user"
         await client.close()
@@ -223,8 +301,6 @@ def test_activation_transient_is_identity_pending_and_retryable() -> None:
             ),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         try:
             await client.prepare_registration("Ada", "ada@example.com")
         except IdentityPending:
@@ -265,8 +341,6 @@ def test_unmanaged_existing_account_is_never_modified() -> None:
             Settings(identity_domain_url="https://identity.example.test", lab_marker="lab"),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         try:
             await client.prepare_registration("Ada", "ada@example.com")
         except IdentityConflict:
@@ -540,8 +614,6 @@ def test_concurrent_create_409_waits_for_managed_user_and_continues(monkeypatch)
             ),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         result = await client.prepare_registration("Ada", "ada@example.com")
         assert result.status == "reconciled"
         await client.close()
@@ -579,8 +651,6 @@ def test_concurrent_create_409_rereads_foreign_user_as_conflict(monkeypatch) -> 
             Settings(identity_domain_url="https://identity.example.test", lab_marker="lab"),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         try:
             await client.prepare_registration("Ada", "ada@example.com")
         except IdentityConflict:
@@ -614,8 +684,6 @@ def test_concurrent_create_409_exhausts_consistency_window_as_pending(monkeypatc
             Settings(identity_domain_url="https://identity.example.test", lab_marker="lab"),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         try:
             await client.prepare_registration("Ada", "ada@example.com")
         except IdentityPending as exc:
@@ -677,8 +745,6 @@ def test_transient_identity_lookup_is_reported_as_pending() -> None:
                 transport=httpx.MockTransport(lambda _: httpx.Response(503))
             ),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         try:
             await client.prepare_registration("Ada", "ada@example.com")
         except IdentityPending as exc:
@@ -688,74 +754,6 @@ def test_transient_identity_lookup_is_reported_as_pending() -> None:
         await client.close()
 
     asyncio.run(run())
-
-
-def test_oauth_401_invalidates_token_and_retries_once() -> None:
-    requests: list[tuple[str, str]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        authorization = request.headers.get("Authorization", "")
-        requests.append((request.url.path, authorization))
-        if request.url.path.endswith("/oauth2/v1/token"):
-            return httpx.Response(200, json={"access_token": "fresh-token", "expires_in": 120})
-        if authorization == "Bearer stale-token":
-            return httpx.Response(401)
-        return httpx.Response(200, json={"Resources": []})
-
-    async def run() -> None:
-        client = IdentityClient(
-            Settings(
-                identity_domain_url="https://identity.example.test",
-                identity_oauth_client_id="client",
-                identity_oauth_client_secret="secret",
-            ),
-            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        )
-        client._token = "stale-token"
-        client._token_refresh_at = float("inf")
-        before = time.monotonic()
-        await client.healthcheck()
-        assert before + 80 < client._token_refresh_at < before + 121
-        await client.close()
-
-    asyncio.run(run())
-    assert requests == [
-        ("/admin/v1/Users", "Bearer stale-token"),
-        ("/oauth2/v1/token", "Basic Y2xpZW50OnNlY3JldA=="),
-        ("/admin/v1/Users", "Bearer fresh-token"),
-    ]
-
-
-def test_expired_oauth_token_is_refreshed_before_identity_request() -> None:
-    requests: list[tuple[str, str]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        authorization = request.headers.get("Authorization", "")
-        requests.append((request.url.path, authorization))
-        if request.url.path.endswith("/oauth2/v1/token"):
-            return httpx.Response(200, json={"access_token": "fresh-token", "expires_in": 60})
-        assert authorization == "Bearer fresh-token"
-        return httpx.Response(200, json={"Resources": []})
-
-    async def run() -> None:
-        client = IdentityClient(
-            Settings(
-                identity_domain_url="https://identity.example.test",
-                identity_oauth_client_id="client",
-                identity_oauth_client_secret="secret",
-            ),
-            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        )
-        client._token = "expired-token"
-        client._token_refresh_at = 0
-        await client.healthcheck()
-        await client.close()
-
-    asyncio.run(run())
-    assert requests == [
-        ("/oauth2/v1/token", "Basic Y2xpZW50OnNlY3JldA=="),
-        ("/admin/v1/Users", "Bearer fresh-token"),
-    ]
 
 
 def test_scim_filter_escapes_quotes_and_backslashes() -> None:
@@ -772,8 +770,6 @@ def test_scim_filter_escapes_quotes_and_backslashes() -> None:
             Settings(identity_domain_url="https://identity.example.test"),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
-        client._token = "test-token"
-        client._token_refresh_at = float("inf")
         assert await client.find_user(email) is None
         await client.close()
 

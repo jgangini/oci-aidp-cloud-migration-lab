@@ -1,13 +1,12 @@
 """Create a Docker Compose .env using the live AIDP lab resources in OCI.
 
-The script deliberately writes secrets only to the requested local file. It never
-prints config values, private keys, OAuth secrets, or the generated environment.
+The script deliberately writes sensitive values only to the requested local file. It never
+prints config values, private keys, or the generated environment.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import configparser
 import os
 import tempfile
@@ -153,16 +152,6 @@ def discover(config: dict[str, str], suffix: str | None) -> dict[str, str]:
             )
         ),
     )
-    app = one(
-        "AIDP registration OAuth application",
-        resources(
-            idcs.list_apps,
-            filter=f'displayName eq "aidp-lab-{selected_suffix}-registration"',
-            attributes="name,displayName",
-            count=1000,
-        ),
-    )
-
     compartments = [config["tenancy"]]
     compartments.extend(
         item.id
@@ -201,27 +190,8 @@ def discover(config: dict[str, str], suffix: str | None) -> dict[str, str]:
             name=f"aidp-data-{selected_suffix}",
         ),
     )
-    vaults = oci.vault.VaultsClient(config)
-    secret = one(
-        "AIDP registration OAuth secret",
-        (
-            item
-            for item in resources(
-                vaults.list_secrets,
-                compartment_id=platform.compartment_id,
-                lifecycle_state="ACTIVE",
-            )
-            if item.secret_name == f"aidp-lab-{selected_suffix}-oauth-client"
-        ),
-    )
-    secret_content = oci.secrets.SecretsClient(config).get_secret_bundle(secret.id).data.secret_bundle_content.content
-    oauth_secret = base64.b64decode(secret_content).decode("utf-8")
-
     return {
         "IDENTITY_DOMAIN_URL": domain.url.rstrip("/"),
-        "IDENTITY_OAUTH_CLIENT_ID": app.name,
-        "IDENTITY_OAUTH_CLIENT_SECRET": oauth_secret,
-        "OAUTH_SECRET_OCID": secret.id,
         "IDENTITY_DEVELOPER_GROUP_ID": developer_group.id,
         "IDENTITY_PENDING_GROUP_ID": pending_group.id,
         "AIDP_WORKBENCH_URL": build_workbench_url(
@@ -245,9 +215,6 @@ def render_env(values: dict[str, str]) -> str:
         "ADMIN_PASSWORD_HASH",
         "REGISTRATION_CODE_HASH",
         "IDENTITY_DOMAIN_URL",
-        "IDENTITY_OAUTH_CLIENT_ID",
-        "IDENTITY_OAUTH_CLIENT_SECRET",
-        "OAUTH_SECRET_OCID",
         "IDENTITY_DEVELOPER_GROUP_ID",
         "IDENTITY_PENDING_GROUP_ID",
         "AIDP_PLATFORM_ID",
@@ -269,8 +236,6 @@ def render_env(values: dict[str, str]) -> str:
             raise RuntimeError(f"Missing generated environment value: {key}")
         if "\n" in values[key] or "\r" in values[key]:
             raise RuntimeError(f"Environment value contains a newline: {key}")
-    # Docker Compose interpolates `$VAR` in env_file values. Escaping here keeps
-    # OAuth client secrets byte-for-byte intact inside the local container.
     keys = (*required, "AIDP_WORKBENCH_URL")
     return "\n".join(f"{key}={values.get(key, '').replace('$', '$$')}" for key in keys) + "\n"
 
@@ -298,9 +263,6 @@ def self_check() -> None:
             "ADMIN_PASSWORD_HASH": "pbkdf2_sha256$1$salt$hash",
             "REGISTRATION_CODE_HASH": "pbkdf2_sha256$1$salt$hash",
             "IDENTITY_DOMAIN_URL": "https://example.invalid",
-            "IDENTITY_OAUTH_CLIENT_ID": "app",
-            "IDENTITY_OAUTH_CLIENT_SECRET": "secret$variable",
-            "OAUTH_SECRET_OCID": "ocid1.vaultsecret.oc1..example",
             "IDENTITY_DEVELOPER_GROUP_ID": "group-a",
             "IDENTITY_PENDING_GROUP_ID": "group-b",
             "AIDP_WORKBENCH_URL": "https://example.datalake.oci.oraclecloud.com#?tenant=example&domain=Default",
@@ -320,7 +282,6 @@ def self_check() -> None:
         }
     )
     assert "LOCAL_DEVELOPMENT_MODE=false" in content
-    assert "IDENTITY_OAUTH_CLIENT_SECRET=secret$$variable" in content
     assert f"OCI_CONFIG_FILE={CONTAINER_OCI_CONFIG}" in content
     sanitized = render_oci_config(
         {
