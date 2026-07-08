@@ -277,11 +277,11 @@ class AidpClient:
         items: list[dict[str, Any]] = []
         page: str | None = None
         while True:
-            query = dict(params or {})
+            query = {"limit": "100", **(params or {})}
             if page:
                 query["page"] = page
             body, response_headers = self._request(
-                "GET", path, params=query or None, include_headers=True, phase=phase
+                "GET", path, params=query, include_headers=True, phase=phase
             )
             items.extend(self._page_items(body))
             page = response_headers.get("opc-next-page") or response_headers.get("Opc-Next-Page")
@@ -393,6 +393,10 @@ class AidpClient:
                 for key, value in expected.items()
             )
         if isinstance(expected, list):
+            if isinstance(actual, str) and all(
+                isinstance(item, str) for item in expected
+            ):
+                return "".join(expected) == actual
             return (
                 isinstance(actual, list)
                 and len(actual) == len(expected)
@@ -402,6 +406,46 @@ class AidpClient:
                 )
             )
         return actual == expected
+
+    def _export_notebook(
+        self,
+        workspace_key: str,
+        path: str,
+    ) -> dict[str, Any] | None:
+        exported = self._request(
+            "POST",
+            f"/workspaces/{workspace_key}/notebook/api/actions/export/contents/{quote(path, safe='')}",
+            payload={"format": "ipynb"},
+            allow_not_found=True,
+            phase="content",
+            retry_scope=path,
+        )
+        if exported is None:
+            return None
+        content = exported.get("content") if isinstance(exported, dict) else None
+        if not isinstance(content, dict):
+            raise AidpProvisionPending(
+                f"AIDP has not exported notebook {path} yet.", "content"
+            )
+        return content
+
+    def _notebook_state(
+        self,
+        workspace_key: str,
+        path: str,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        object_body, object_headers = self._workspace_object(
+            workspace_key, path, phase="content"
+        )
+        exists = self._workspace_object_exists(object_body, object_headers)
+        if not exists:
+            return False, None
+        if self._workspace_object_type(object_body, object_headers) not in {
+            "",
+            "NOTEBOOK",
+        }:
+            raise AidpProvisionError(f"Workspace path {path} exists but is not a notebook.")
+        return True, self._export_notebook(workspace_key, path)
 
     def _ensure_folder(self, workspace_key: str, path: str) -> bool:
         body, headers = self._workspace_object(workspace_key, path, phase="workspace")
@@ -488,22 +532,16 @@ class AidpClient:
         repair_drift: bool = True,
     ) -> bool:
         content_path = f"/workspaces/{workspace_key}/notebook/api/contents/{quote(path, safe='')}"
-        object_body, object_headers = self._workspace_object(
-            workspace_key, path, phase="content"
-        )
-        current = (
-            self._request("GET", content_path, allow_not_found=True, phase="content")
-            if self._workspace_object_exists(object_body, object_headers)
-            else None
-        )
-        current_content = current.get("content") if isinstance(current, dict) else None
-        if isinstance(current, dict) and current.get("type") not in {None, "notebook"}:
-            raise AidpProvisionError(f"Workspace path {path} exists but is not a notebook.")
-        if current is not None and (
+        exists, current_content = self._notebook_state(workspace_key, path)
+        if current_content is not None and (
             self._notebook_matches(current_content, notebook) or not repair_drift
         ):
             return False
-        if current is None:
+        if exists and current_content is None and not repair_drift:
+            raise AidpProvisionPending(
+                f"AIDP has not published readable notebook {path} yet.", "content"
+            )
+        if not exists:
             parent = path.rsplit("/", 1)[0]
             created = self._request(
                 "POST",
@@ -533,10 +571,8 @@ class AidpClient:
             },
             phase="content",
         )
-        current = self._request("GET", content_path, allow_not_found=True, phase="content")
-        if not isinstance(current, dict) or not self._notebook_matches(
-            current.get("content"), notebook
-        ):
+        current_content = self._export_notebook(workspace_key, path)
+        if current_content is None or not self._notebook_matches(current_content, notebook):
             raise AidpProvisionPending(f"AIDP has not published notebook {path} yet.", "content")
         return True
 
@@ -761,7 +797,14 @@ class AidpClient:
             isinstance(actual, dict)
             and actual.get("type") == "NOTEBOOK_TASK"
             and actual.get("taskKey") == expected["taskKey"]
-            and actual.get("dependsOn") == expected["dependsOn"]
+            and isinstance(actual.get("dependsOn"), list)
+            and [
+                dependency.get("taskKey")
+                if isinstance(dependency, dict)
+                else None
+                for dependency in actual["dependsOn"]
+            ]
+            == [dependency["taskKey"] for dependency in expected["dependsOn"]]
             and actual.get("runIf") == "ALL_SUCCESS"
             and actual.get("notebookPath") == expected["notebookPath"]
             and (actual.get("cluster") or {}).get("clusterKey") == compute_key

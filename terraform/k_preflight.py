@@ -195,9 +195,9 @@ def select_inputs(
                 },
                 "events": [
                     {
-                        "name": "Immutable v1.0.0 source",
+                        "name": "Immutable v1.0.1 source",
                         "status": "passed",
-                        "message": "v1.0.0 source context and deployment source passed",
+                        "message": "v1.0.1 source context and deployment source passed",
                     },
                     {
                         "name": "Compartment availability",

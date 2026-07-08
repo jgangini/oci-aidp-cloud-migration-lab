@@ -31,6 +31,9 @@ await promisify(execFile)(
 const require = createRequire(import.meta.url);
 const {
   ApiRequestError,
+  getOrCreateResetOperation,
+  loadResetOperation,
+  persistResetOperation,
   RegistrationPollingTimeout,
   parseRetryAfter,
   pollRegistration,
@@ -144,4 +147,50 @@ test("polling preserves an immutable-industry 409", async () => {
     }),
     (error) => error === conflict && error.message === "industry is immutable",
   );
+});
+
+test("reset operations reuse one UUID until completion", () => {
+  let created = 0;
+  const createId = () => `operation-${++created}`;
+  const first = getOrCreateResetOperation(undefined, "banking", createId);
+  const retry = getOrCreateResetOperation(first, "banking", createId);
+
+  assert.deepEqual(first, { industry: "banking", operationId: "operation-1" });
+  assert.equal(retry, first);
+  assert.equal(created, 1);
+  assert.throws(
+    () => getOrCreateResetOperation(first, "retail", createId),
+    /Finish the pending AIDP reset/,
+  );
+  assert.equal(created, 1);
+  assert.deepEqual(getOrCreateResetOperation(undefined, "retail", createId), {
+    industry: "retail",
+    operationId: "operation-2",
+  });
+});
+
+test("reset operations survive a page reload until completion", () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+  const operation = {
+    industry: "healthcare",
+    operationId: "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43",
+  };
+
+  persistResetOperation(storage, "user-1", operation);
+  assert.deepEqual(loadResetOperation(storage, "user-1", ["healthcare"]), operation);
+  persistResetOperation(storage, "user-1");
+  assert.equal(loadResetOperation(storage, "user-1", ["healthcare"]), undefined);
+  assert.doesNotThrow(() =>
+    persistResetOperation({ ...storage, removeItem: () => { throw new Error("blocked"); } }, "user-1"),
+  );
+  storage.setItem(
+    "aidp-lab.reset.user-1",
+    JSON.stringify({ industry: "unknown", operationId: operation.operationId }),
+  );
+  assert.equal(loadResetOperation(storage, "user-1", ["healthcare"]), undefined);
 });

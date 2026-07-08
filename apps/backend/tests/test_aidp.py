@@ -7,6 +7,7 @@ from urllib.parse import unquote
 
 import pytest
 
+from app.industry_kits import INDUSTRIES
 from app.aidp import (
     AidpClient,
     AidpProvisionConflict,
@@ -131,8 +132,8 @@ def test_list_follows_opc_next_page_and_preserves_filters() -> None:
         {"key": "two"},
     ]
     assert calls == [
-        {"catalogKey": "catalog"},
-        {"catalogKey": "catalog", "page": "next-token"},
+        {"limit": "100", "catalogKey": "catalog"},
+        {"limit": "100", "catalogKey": "catalog", "page": "next-token"},
     ]
 
 
@@ -279,16 +280,16 @@ def test_notebooks_are_compared_before_create_or_update() -> None:
     reads: list[str] = []
 
     client._workspace_object = lambda _workspace, path, **_kwargs: (
-        (b"", {"type": "FILE"}) if path in notebooks else (None, {})
+        (b"", {"type": "NOTEBOOK"}) if path in notebooks else (None, {})
     )
 
     def request(method, path, *, payload=None, **_kwargs):
         target = path.rsplit("/", 1)[-1]
         decoded = unquote(target)
-        if method == "GET":
+        if method == "POST" and "/actions/export/" in path:
             reads.append(decoded)
             content = notebooks.get(decoded)
-            return None if content is None else {"content": content}
+            return None if content is None else {"content": content, "format": "ipynb"}
         if method == "POST":
             writes.append((method, path))
             return {"path": f"{decoded}/Untitled.ipynb"}
@@ -313,6 +314,78 @@ def test_notebooks_are_compared_before_create_or_update() -> None:
     assert client._upload_notebook("workspace", missing_path, expected)
     assert [method for method, _ in writes] == ["PUT", "POST", "PATCH", "PUT"]
     assert reads.count(missing_path) == 1
+
+
+@pytest.mark.parametrize("industry", INDUSTRIES)
+def test_partial_notebooks_are_repaired_in_place_for_every_industry(industry: str) -> None:
+    client = bare_client()
+    key = participant_key(USER_OCID)
+    expected = user_notebooks(industry, key, EMAIL, "bucket", "namespace")
+    stored: dict[str, dict] = {}
+    calls: dict[str, list[str]] = {name: [] for name in expected}
+    client._workspace_object = lambda *_args, **_kwargs: (b"", {"type": "NOTEBOOK"})
+
+    def request(method, path, *, payload=None, **_kwargs):
+        target = unquote(path.rsplit("/", 1)[-1])
+        name = target.rsplit("/", 1)[-1]
+        calls[name].append(method)
+        if method == "POST" and "/actions/export/" in path:
+            if target not in stored:
+                return None
+            normalized = json.loads(json.dumps(stored[target]))
+            for cell in normalized["cells"]:
+                if isinstance(cell.get("source"), list):
+                    cell["source"] = "".join(cell["source"])
+            return {"content": normalized, "format": "ipynb"}
+        if method == "PUT":
+            stored[payload["path"]] = payload["content"]
+            return None
+        raise AssertionError(method)
+
+    client._request = request
+    root = workspace_root(EMAIL, industry)
+    for name, notebook in expected.items():
+        assert client._upload_notebook("workspace", f"{root}/{name}", notebook)
+        assert calls[name] == ["POST", "PUT", "POST"]
+
+
+def test_unreadable_notebook_is_not_overwritten_when_drift_repair_is_disabled() -> None:
+    client = bare_client()
+    calls: list[str] = []
+    client._workspace_object = lambda *_args, **_kwargs: (b"", {"type": "NOTEBOOK"})
+
+    def request(method, *_args, **_kwargs):
+        calls.append(method)
+        raise AidpProvisionPending("AIDP is still reconciling the requested material.")
+
+    client._request = request
+    with pytest.raises(AidpProvisionPending):
+        client._upload_notebook(
+            "workspace",
+            "/Workspace/medallon/one@example.com/banking/exact.ipynb",
+            {"nbformat": 4, "cells": []},
+            repair_drift=False,
+        )
+    assert calls == ["POST"]
+
+
+def test_transient_notebook_export_failure_never_triggers_a_write() -> None:
+    client = bare_client()
+    calls: list[str] = []
+    client._workspace_object = lambda *_args, **_kwargs: (b"", {"type": "NOTEBOOK"})
+
+    def request(method, *_args, **_kwargs):
+        calls.append(method)
+        raise AidpProvisionPending("AIDP is still reconciling the requested material.")
+
+    client._request = request
+    with pytest.raises(AidpProvisionPending):
+        client._upload_notebook(
+            "workspace",
+            "/Workspace/medallon/one@example.com/banking/exact.ipynb",
+            {"nbformat": 4, "cells": []},
+        )
+    assert calls == ["POST"]
 
 
 def test_schema_contract_lists_real_resources_and_creates_only_missing() -> None:
@@ -377,6 +450,13 @@ def test_job_is_returned_only_after_exact_four_stage_contract_is_visible() -> No
         [{"taskKey": "stage_3"}],
     ]
     assert published["jobClusters"] == [{"clusterKey": "compute"}]
+
+    for task in published["tasks"]:
+        task["dependsOn"] = [
+            {**dependency, "outcome": None} for dependency in task["dependsOn"]
+        ]
+        task["cluster"]["clusterName"] = None
+    published["jobClusters"][0]["clusterName"] = None
 
     writes: list[str] = []
     client._request = lambda method, _path, **_kwargs: (
@@ -530,25 +610,26 @@ def test_control_manifest_is_workspace_scoped_idempotent_and_industry_is_immutab
         client._manifest("workspace", key)
 
 
-def test_provisioning_reconciles_real_inventory_and_repairs_active_drift() -> None:
+@pytest.mark.parametrize("industry", INDUSTRIES)
+def test_provisioning_reconciles_real_inventory_and_repairs_active_drift(industry: str) -> None:
     client = bare_client()
     client.settings = SimpleNamespace(bucket_name="bucket", objectstorage_namespace="namespace")
     key = participant_key(USER_OCID)
     manifest = {
         "layout_version": 2,
         "participant_key": key,
-        "industry": "banking",
-        "workspace_path": f"/Workspace/medallon/{EMAIL}/banking",
+        "industry": industry,
+        "workspace_path": f"/Workspace/medallon/{EMAIL}/{industry}",
         "phase": "workspace",
     }
-    root = f"/Workspace/medallon/{EMAIL}/banking"
+    root = f"/Workspace/medallon/{EMAIL}/{industry}"
     folders: set[str] = set()
     files: dict[str, bytes] = {}
     notebooks: dict[str, dict] = {}
     writes = {"folders": 0, "files": 0, "notebooks": 0, "schemas": 0, "job": 0, "permissions": 0}
     state = {"schemas": False, "job": False, "permissions": False}
     schemas = {layer: {"key": f"schema-{layer}"} for layer in LAYER_PREFIXES}
-    job_name = f"wf_{key}_banking_medallion"
+    job_name = f"wf_{key}_{industry}_medallion"
 
     client._workspace = lambda: {"key": "workspace"}
     client._shared_compute = lambda _workspace: {"key": "compute"}
@@ -609,7 +690,7 @@ def test_provisioning_reconciles_real_inventory_and_repairs_active_drift() -> No
     phases = []
     for _ in range(3):
         with pytest.raises(AidpProvisionPending) as pending:
-            client._provision_user(USER_OCID, EMAIL, "banking")
+            client._provision_user(USER_OCID, EMAIL, industry)
         phases.append(pending.value.phase)
     assert phases == ["schemas", "content", "permissions"]
     assert manifest["phase"] == "permissions"
@@ -617,60 +698,60 @@ def test_provisioning_reconciles_real_inventory_and_repairs_active_drift() -> No
     assert "/Workspace/medallon/.control" in folders
     assert len(files) == 5  # one participant manifest plus four source CSVs
     assert len(notebooks) == 4
-    assert all(path.startswith(f"/Workspace/medallon/{EMAIL}/banking/") for path in notebooks)
+    assert all(path.startswith(f"/Workspace/medallon/{EMAIL}/{industry}/") for path in notebooks)
     assert all("/notebooks/" not in path for path in notebooks)
 
-    material = client._provision_user(USER_OCID, EMAIL, "banking")
+    material = client._provision_user(USER_OCID, EMAIL, industry)
     assert material == UserMaterial(
         EMAIL,
-        "banking",
+        industry,
         key,
-        f"/Workspace/medallon/{EMAIL}/banking",
+        f"/Workspace/medallon/{EMAIL}/{industry}",
         job_name,
     )
     assert manifest["phase"] == "active"
     completed_writes = writes.copy()
-    assert client._provision_user(USER_OCID, EMAIL, "banking") == material
+    assert client._provision_user(USER_OCID, EMAIL, industry) == material
     assert writes == completed_writes
 
     missing_csv = next(path for path in files if path.startswith(f"{root}/source/"))
     del files[missing_csv]
     with pytest.raises(AidpProvisionPending) as pending:
-        client._provision_user(USER_OCID, EMAIL, "banking")
+        client._provision_user(USER_OCID, EMAIL, industry)
     assert pending.value.phase == "permissions"
     assert writes["files"] == completed_writes["files"] + 1
-    assert client._provision_user(USER_OCID, EMAIL, "banking") == material
+    assert client._provision_user(USER_OCID, EMAIL, industry) == material
 
     folders.remove(f"{root}/source")
     with pytest.raises(AidpProvisionPending) as pending:
-        client._provision_user(USER_OCID, EMAIL, "banking")
+        client._provision_user(USER_OCID, EMAIL, industry)
     assert pending.value.phase == "schemas"
-    assert client._provision_user(USER_OCID, EMAIL, "banking") == material
+    assert client._provision_user(USER_OCID, EMAIL, industry) == material
 
     state["schemas"] = False
     with pytest.raises(AidpProvisionPending) as pending:
-        client._provision_user(USER_OCID, EMAIL, "banking")
+        client._provision_user(USER_OCID, EMAIL, industry)
     assert pending.value.phase == "content"
-    assert client._provision_user(USER_OCID, EMAIL, "banking") == material
+    assert client._provision_user(USER_OCID, EMAIL, industry) == material
 
     del notebooks[next(iter(notebooks))]
     with pytest.raises(AidpProvisionPending) as pending:
-        client._provision_user(USER_OCID, EMAIL, "banking")
+        client._provision_user(USER_OCID, EMAIL, industry)
     assert pending.value.phase == "permissions"
-    assert client._provision_user(USER_OCID, EMAIL, "banking") == material
+    assert client._provision_user(USER_OCID, EMAIL, industry) == material
 
     state["job"] = False
     with pytest.raises(AidpProvisionPending) as pending:
-        client._provision_user(USER_OCID, EMAIL, "banking")
+        client._provision_user(USER_OCID, EMAIL, industry)
     assert pending.value.phase == "permissions"
-    assert client._provision_user(USER_OCID, EMAIL, "banking") == material
+    assert client._provision_user(USER_OCID, EMAIL, industry) == material
 
     state["permissions"] = False
     with pytest.raises(AidpProvisionPending) as pending:
-        client._provision_user(USER_OCID, EMAIL, "banking")
+        client._provision_user(USER_OCID, EMAIL, industry)
     assert pending.value.phase == "permissions"
     assert manifest["phase"] == "active"
-    assert client._provision_user(USER_OCID, EMAIL, "banking") == material
+    assert client._provision_user(USER_OCID, EMAIL, industry) == material
 
 
 def test_local_client_is_idempotent_conflict_safe_and_cleanup_is_exact() -> None:
@@ -696,7 +777,10 @@ def test_local_client_is_idempotent_conflict_safe_and_cleanup_is_exact() -> None
     asyncio.run(run())
 
 
-def test_reset_journal_changes_industry_and_same_operation_never_cleans_twice() -> None:
+@pytest.mark.parametrize("target_industry", INDUSTRIES)
+def test_reset_journal_changes_industry_and_same_operation_never_cleans_twice(
+    target_industry: str,
+) -> None:
     client = bare_client()
     key = participant_key(USER_OCID)
     operation_id = "4ab88c5e-c9e3-47bf-8dca-97f7eb7d0d43"
@@ -728,18 +812,18 @@ def test_reset_journal_changes_industry_and_same_operation_never_cleans_twice() 
         )
 
     client._provision_user = provision
-    first = client._reset_user(USER_OCID, EMAIL, "retail", operation_id)
-    second = client._reset_user(USER_OCID, EMAIL, "retail", operation_id)
+    first = client._reset_user(USER_OCID, EMAIL, target_industry, operation_id)
+    second = client._reset_user(USER_OCID, EMAIL, target_industry, operation_id)
 
     assert first == second
     assert cleanups == [True]
     assert deleted_paths == ["/Workspace/lab-users/ada@example.com"]
     assert writes == ["cleanup", "provision", "complete"]
-    assert manifest["industry"] == "retail"
+    assert manifest["industry"] == target_industry
     assert manifest["reset"] == {
         "operation_id": operation_id,
-        "target_industry": "retail",
-        "target_workspace_path": workspace_root(EMAIL, "retail"),
+        "target_industry": target_industry,
+        "target_workspace_path": workspace_root(EMAIL, target_industry),
         "phase": "complete",
     }
 

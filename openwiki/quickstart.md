@@ -1,7 +1,7 @@
 # OpenWiki quickstart
 
 ## What this repository is
-OCI AI Data Platform Cloud Migration Lab v1.0.0 is a Deploy Studio package and supporting application for standing up a structured Oracle AI Data Platform lab. The repository combines:
+OCI AI Data Platform Cloud Migration Lab v1.0.1 is a Deploy Studio package and supporting application for standing up a structured Oracle AI Data Platform lab. The repository combines:
 
 - a FastAPI backend that handles registration, administrator login, and Identity Domains user management
 - a React/Vite frontend for the registration and admin experience
@@ -45,7 +45,7 @@ The top-level README is the user-facing source of truth for safety constraints, 
 - Terraform tests: [`terraform/tests/`](../terraform/tests/)
 
 ## Key concepts
-- Release v1.0.0 uses a single private `aidp-data-<suffix>` bucket with medallion prefixes `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/`; it uses OCI URIs and external tables, not external volumes or explicit OSCS/OpenSearch.
+- Release v1.0.1 uses a single private `aidp-data-<suffix>` bucket with medallion prefixes `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/`; it uses OCI URIs and external tables, not external volumes or explicit OSCS/OpenSearch.
 - Participant folders use the normalized email; jobs, bucket paths, and tables retain an opaque key inside four shared medallion schemas.
 - Registration moves a user from pending to developers only after workspace, schemas, content, and permissions are complete.
 - AIDP access is split between pending, developer, operator-admin, and per-participant grants. The uploaded operator remains a direct member of built-in `AI_DATA_PLATFORM_ADMIN`; its exact profile is delivered once through an authenticated encrypted envelope. There is no `AIDP_LAB_PROVISIONER`, additional API key, OAuth client, Vault secret, or runtime instance-principal fallback.

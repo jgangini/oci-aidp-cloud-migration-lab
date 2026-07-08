@@ -7,8 +7,11 @@ const pollingSource = await readFile(new URL("../src/registrationPoll.ts", impor
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
-test("secrets are never persisted in browser storage", () => {
-  assert.doesNotMatch(source, /localStorage|sessionStorage/);
+test("browser storage is limited to the non-secret reset operation", () => {
+  assert.doesNotMatch(source, /localStorage\.setItem|sessionStorage/);
+  assert.match(pollingSource, /aidp-lab\.reset\.\$\{userId\}/);
+  assert.match(pollingSource, /JSON\.stringify\(operation\)/);
+  assert.doesNotMatch(pollingSource, /password|registrationCode|email/i);
 });
 
 test("registration has no password field while administrator login remains protected", () => {
@@ -71,8 +74,12 @@ test("administrator can reset only a participant AIDP environment", () => {
   assert.match(source, /industryLabel\(user\.industry\)/);
   assert.match(source, /Reset AIDP environment for \$\{user\.email\}/);
   assert.match(source, /\/api\/admin\/users\/\$\{encodeURIComponent\(target\.id\)\}\/reset/);
-  assert.match(source, /const operationId = crypto\.randomUUID\(\)/);
-  assert.match(source, /operation_id: operationId/);
+  assert.match(source, /resetOperationsRef = useRef\(new Map<string, ResetOperation>\(\)\)/);
+  assert.match(source, /loadResetOperation\(window\.localStorage, target\.id, industryValues\)/);
+  assert.match(source, /persistResetOperation\(window\.localStorage, target\.id, operation\)/);
+  assert.match(source, /persistResetOperation\(window\.localStorage, target\.id\)/);
+  assert.match(source, /operation_id: operation\.operationId/);
+  assert.match(source, /resetOperationsRef\.current\.delete\(target\.id\)/);
   assert.match(source, /The OCI Identity account is preserved/);
   assert.match(source, /open=\{Boolean\(pendingReset\) && !resetting\}/);
   assert.match(source, /aria-busy=\{resetting\} inert=\{resetting\}/);

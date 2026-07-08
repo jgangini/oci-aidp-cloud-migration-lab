@@ -12,12 +12,16 @@ import { createPortal } from "react-dom";
 
 import {
   ApiRequestError,
+  getOrCreateResetOperation,
+  loadResetOperation,
   parseRetryAfter,
+  persistResetOperation,
   pollRegistration,
   registrationProgress,
   type RegistrationPhase,
   type RegistrationPhaseValue,
   type RegistrationResponse,
+  type ResetOperation,
 } from "./registrationPoll";
 
 type ApiError = { detail?: string };
@@ -37,6 +41,7 @@ const industryOptions = [
   { value: "retail", label: "Retail" },
   { value: "healthcare", label: "Healthcare" },
 ] as const;
+const industryValues = industryOptions.map(({ value }) => value);
 
 function industryLabel(industry?: string | null) {
   return (
@@ -927,6 +932,7 @@ function AdminUsers() {
   const [draft, setDraft] = useState({ name: "", email: "", industry: "banking" });
   const createAbortRef = useRef<AbortController | null>(null);
   const resetAbortRef = useRef<AbortController | null>(null);
+  const resetOperationsRef = useRef(new Map<string, ResetOperation>());
   const [pendingReset, setPendingReset] = useState<LabUser | null>(null);
   const [resetIndustry, setResetIndustry] = useState("banking");
   const [resetting, setResetting] = useState(false);
@@ -1008,6 +1014,8 @@ function AdminUsers() {
       await api(`/api/admin/users/${encodeURIComponent(pendingDelete.id)}`, {
         method: "DELETE",
       });
+      resetOperationsRef.current.delete(pendingDelete.id);
+      persistResetOperation(window.localStorage, pendingDelete.id);
       setPendingDelete(null);
       setMessage("User deleted from the lab.");
       await loadUsers();
@@ -1026,7 +1034,24 @@ function AdminUsers() {
   async function resetUser() {
     if (!pendingReset) return;
     const target = pendingReset;
-    const operationId = crypto.randomUUID();
+    let operation: ResetOperation;
+    try {
+      operation = getOrCreateResetOperation(
+        resetOperationsRef.current.get(target.id) ||
+          loadResetOperation(window.localStorage, target.id, industryValues),
+        resetIndustry,
+        () => crypto.randomUUID(),
+      );
+      resetOperationsRef.current.set(target.id, operation);
+      persistResetOperation(window.localStorage, target.id, operation);
+    } catch (reason) {
+      setResetError(
+        reason instanceof Error && reason.message.includes("pending AIDP reset")
+          ? reason.message
+          : "Browser storage is unavailable; the AIDP reset was not started.",
+      );
+      return;
+    }
     const controller = new AbortController();
     resetAbortRef.current?.abort();
     resetAbortRef.current = controller;
@@ -1047,14 +1072,16 @@ function AdminUsers() {
             {
               method: "POST",
               body: JSON.stringify({
-                industry: resetIndustry,
-                operation_id: operationId,
+                industry: operation.industry,
+                operation_id: operation.operationId,
               }),
               signal,
             },
           ),
         onPending: setResetProgress,
       });
+      resetOperationsRef.current.delete(target.id);
+      persistResetOperation(window.localStorage, target.id);
       setPendingReset(null);
       setMessage(
         result.message ||
@@ -1249,8 +1276,17 @@ function AdminUsers() {
                             className="table-action table-reset"
                             type="button"
                             onClick={() => {
+                              const operation =
+                                resetOperationsRef.current.get(user.id) ||
+                                loadResetOperation(
+                                  window.localStorage,
+                                  user.id,
+                                  industryValues,
+                                );
+                              if (operation)
+                                resetOperationsRef.current.set(user.id, operation);
                               setResetError("");
-                              setResetIndustry(user.industry || "banking");
+                              setResetIndustry(operation?.industry || user.industry || "banking");
                               setPendingReset(user);
                             }}
                             aria-label={`Reset AIDP environment for ${user.email}`}
@@ -1307,6 +1343,9 @@ function AdminUsers() {
           <select
             value={resetIndustry}
             onChange={(event) => setResetIndustry(event.target.value)}
+            disabled={Boolean(
+              pendingReset && resetOperationsRef.current.has(pendingReset.id),
+            )}
             required
           >
             {industryOptions.map((industry) => (

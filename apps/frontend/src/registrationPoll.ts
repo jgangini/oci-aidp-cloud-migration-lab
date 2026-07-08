@@ -35,6 +35,63 @@ export type RegistrationResponse = {
   aidp_url?: string;
 };
 
+export type ResetOperation = {
+  industry: string;
+  operationId: string;
+};
+
+type ResetOperationStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+const resetOperationId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function resetOperationStorageKey(userId: string) {
+  return `aidp-lab.reset.${userId}`;
+}
+
+export function loadResetOperation(
+  storage: ResetOperationStorage,
+  userId: string,
+  industries: readonly string[],
+): ResetOperation | undefined {
+  try {
+    const value = JSON.parse(storage.getItem(resetOperationStorageKey(userId)) || "null");
+    return value &&
+      industries.includes(value.industry) &&
+      typeof value.operationId === "string" &&
+      resetOperationId.test(value.operationId)
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function persistResetOperation(
+  storage: ResetOperationStorage,
+  userId: string,
+  operation?: ResetOperation,
+) {
+  if (operation)
+    storage.setItem(resetOperationStorageKey(userId), JSON.stringify(operation));
+  else {
+    try {
+      storage.removeItem(resetOperationStorageKey(userId));
+    } catch {
+      // ponytail: a stale UUID only replays an idempotent completed reset; never mask remote success.
+    }
+  }
+}
+
+export function getOrCreateResetOperation(
+  current: ResetOperation | undefined,
+  industry: string,
+  createId: () => string,
+): ResetOperation {
+  if (!current) return { industry, operationId: createId() };
+  if (current.industry !== industry)
+    throw new Error("Finish the pending AIDP reset before choosing another industry.");
+  return current;
+}
+
 export const registrationRetryDelaysMs = [
   2_000, 4_000, 8_000, 16_000, 30_000,
 ] as const;

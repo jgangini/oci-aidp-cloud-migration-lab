@@ -1,6 +1,6 @@
 # Architecture overview
 
-Release v1.0.0 packages a small web application plus OCI infrastructure around a specific lab workflow: create lab users in Identity Domains, expose the lab console link, and provision the surrounding AI Data Platform resources that make the lab usable.
+Release v1.0.1 packages a small web application plus OCI infrastructure around a specific lab workflow: create lab users in Identity Domains, expose the lab console link, and provision the surrounding AI Data Platform resources that make the lab usable.
 
 ## System pieces
 

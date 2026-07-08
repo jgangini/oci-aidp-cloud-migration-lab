@@ -1,6 +1,6 @@
 # Testing guide
 
-Release v1.0.0 leans on tests to protect the lab’s security and workflow boundaries. The most useful thing to know is not just where tests live, but what each suite is defending.
+Release v1.0.1 leans on tests to protect the lab’s security and workflow boundaries. The most useful thing to know is not just where tests live, but what each suite is defending.
 
 ## Backend tests
 [`apps/backend/tests/test_api.py`](../apps/backend/tests/test_api.py) verifies the service contract around:
