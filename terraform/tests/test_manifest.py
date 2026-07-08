@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -57,6 +58,13 @@ def test_deploy_studio_manifest_contract() -> None:
         "preferred_vm_shape",
         "availability_domain_index",
     ]
+    runtime_fields = {
+        field["name"]: field for field in manifest["preflight"]["runtime_fields"]
+    }
+    assert re.fullmatch(
+        runtime_fields["operator_user_ocid"]["pattern"],
+        "ocid1.user.oc1..operator",
+    )
     assert (root / manifest["preflight"]["entrypoint"]).is_file()
     assert "aidp_workbench_url" in manifest["outputs"]
     assert {

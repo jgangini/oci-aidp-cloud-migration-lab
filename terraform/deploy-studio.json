@@ -115,7 +115,7 @@
         "label": "OCI deployment operator",
         "type": "text",
         "required": true,
-        "pattern": "^ocid1\\.user\\.",
+        "pattern": "^ocid1\\.user\\..+$",
         "min_length": 20,
         "max_length": 255
       },
