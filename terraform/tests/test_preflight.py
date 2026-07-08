@@ -99,6 +99,8 @@ def _select(
     identity: Identity | None = None,
     limits: Limits | None = None,
     aidp: Aidp | None = None,
+    compartment: str = "oci-aidp-cloud-migration-lab-5",
+    compartment_mode: str = "new",
 ) -> tuple[dict[str, Any], Compute]:
     compute = Compute(statuses)
     identity = identity or Identity()
@@ -107,6 +109,8 @@ def _select(
     result = preflight.select_inputs(
         {
             "region": "us-chicago-1",
+            "compartment": compartment,
+            "compartment_mode": compartment_mode,
             "inputs": {},
         },
         {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
@@ -135,16 +139,16 @@ def test_preflight_selects_e5_and_discovers_home_region() -> None:
     assert any(event["name"] == "Identity Domain signing certificate access" for event in result["events"])
 
 
-def test_preflight_rejects_existing_lab4_compartment_across_pages() -> None:
+def test_preflight_rejects_occupied_new_compartment_across_pages() -> None:
     class PagedIdentity(Identity):
         def list_compartments(self, **kwargs: Any) -> Any:
             if kwargs.get("page") == "next":
                 return SimpleNamespace(
-                    data=[SimpleNamespace(id="ocid1.compartment.oc1..active", lifecycle_state="ACTIVE")],
+                    data=[SimpleNamespace(id="ocid1.compartment.oc1..active", name="OCI-AIDP-CLOUD-MIGRATION-LAB-5", lifecycle_state="ACTIVE")],
                     headers={},
                 )
             return SimpleNamespace(
-                data=[SimpleNamespace(id="ocid1.compartment.oc1..deleted", lifecycle_state="DELETED")],
+                data=[SimpleNamespace(id="ocid1.compartment.oc1..deleted", name="oci-aidp-cloud-migration-lab-5", lifecycle_state="DELETED")],
                 headers={"opc-next-page": "next"},
             )
 
@@ -153,11 +157,11 @@ def test_preflight_rejects_existing_lab4_compartment_across_pages() -> None:
         _select({preflight.E5_SHAPE: (available, "1")}, identity=PagedIdentity())
 
 
-def test_preflight_rejects_active_work_request_from_deleted_lab4() -> None:
+def test_preflight_rejects_active_work_request_from_deleted_target() -> None:
     class DeletedIdentity(Identity):
         def list_compartments(self, **_kwargs: Any) -> Any:
             return SimpleNamespace(
-                data=[SimpleNamespace(id="ocid1.compartment.oc1..deleted", lifecycle_state="DELETED")],
+                data=[SimpleNamespace(id="ocid1.compartment.oc1..deleted", name="oci-aidp-cloud-migration-lab-5", lifecycle_state="DELETED")],
                 headers={},
             )
 
@@ -174,6 +178,32 @@ def test_preflight_rejects_active_work_request_from_deleted_lab4() -> None:
         )
 
 
+def test_preflight_accepts_one_active_existing_compartment() -> None:
+    class ExistingIdentity(Identity):
+        def list_compartments(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                data=[SimpleNamespace(id="ocid1.compartment.oc1..existing", name="Shared_Lab.2026", lifecycle_state="ACTIVE")],
+                headers={},
+            )
+
+    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
+    result, _ = _select(
+        {preflight.E5_SHAPE: (available, "1")},
+        identity=ExistingIdentity(),
+        compartment="Shared_Lab.2026",
+        compartment_mode="existing",
+    )
+    event = next(item for item in result["events"] if item["name"] == "Compartment availability")
+    assert event["message"] == "Shared_Lab.2026 exists and is ACTIVE"
+
+
+def test_preflight_reports_selected_new_name_is_available() -> None:
+    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
+    result, _ = _select({preflight.E5_SHAPE: (available, "1")}, compartment="custom.lab_2026")
+    event = next(item for item in result["events"] if item["name"] == "Compartment availability")
+    assert event["message"] == "custom.lab_2026 is available to create"
+
+
 def test_preflight_requires_two_available_virtual_vault_slots() -> None:
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
     with pytest.raises(RuntimeError, match="at least two"):
@@ -184,7 +214,7 @@ def test_preflight_requires_public_identity_domain_signing_certificate() -> None
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
     with pytest.raises(RuntimeError, match="Access Signing Certificate"):
         preflight.select_inputs(
-            {"region": "us-chicago-1", "inputs": {}},
+            {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
             {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
             identity_factory=lambda _config: Identity(),
             compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
@@ -204,7 +234,7 @@ def test_preflight_finds_default_domain_by_stable_type() -> None:
 
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
     preflight.select_inputs(
-        {"region": "us-chicago-1", "inputs": {}},
+        {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
         {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
         identity_factory=lambda _config: RecordingIdentity(),
         compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
@@ -276,7 +306,7 @@ def test_preflight_checks_all_availability_domains_for_standard_shape() -> None:
             )
 
     result = preflight.select_inputs(
-        {"region": "us-chicago-1", "inputs": {}},
+        {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
         {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
         identity_factory=lambda _config: MultiAdIdentity(),
         compute_factory=lambda _config: MultiAdCompute(),
@@ -318,7 +348,7 @@ def test_preflight_accepts_any_available_fault_domain() -> None:
             )
 
     result = preflight.select_inputs(
-        {"region": "us-chicago-1", "inputs": {}},
+        {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
         {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
         identity_factory=lambda _config: Identity(),
         compute_factory=lambda _config: FaultDomainCompute(),

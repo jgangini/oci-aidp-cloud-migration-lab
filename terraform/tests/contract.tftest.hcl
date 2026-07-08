@@ -186,7 +186,9 @@ run "resolved_compartment_contract" {
       length(oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user) == 1 &&
       oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_api_keys &&
       !oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_console &&
-      !oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_console_password
+      !oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_console_password &&
+      length(oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensionuser_user) == 1 &&
+      oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensionuser_user[0].bypass_notification
     )
     error_message = "The technical provisioner must be API-only and non-interactive."
   }

@@ -20,10 +20,11 @@ def _context() -> dict[str, object]:
     return {
         "project_id": "oci-aidp-cloud-migration-lab",
         "region": "us-chicago-1",
-        "compartment": "oci-aidp-cloud-migration-lab-4",
+        "compartment": "oci-aidp-cloud-migration-lab-5",
+        "compartment_mode": "new",
         "source": {
             "repository": "https://github.com/jgangini/oci-aidp-cloud-migration-lab.git",
-            "ref": "v2.0.0",
+            "ref": "v2.0.1",
             "commit_sha": "0123456789abcdef0123456789abcdef01234567",
         },
     }
@@ -52,11 +53,11 @@ def _plan(*, actions: list[str] | None = None, resource_type: str = "oci_core_in
     }
 
 
-def test_context_requires_exact_v2_lab4_source() -> None:
+def test_context_requires_exact_v201_source() -> None:
     release_gate.validate_context(_context())
     invalid = _context()
     invalid["source"] = {**invalid["source"], "ref": "main"}  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="v2.0.0"):
+    with pytest.raises(ValueError, match="v2.0.1"):
         release_gate.validate_context(invalid)
 
 
@@ -65,7 +66,6 @@ def test_context_requires_exact_v2_lab4_source() -> None:
     [
         ("project_id", "other", "project_id"),
         ("region", "us-ashburn-1", "us-chicago-1"),
-        ("compartment", "oci-aidp-cloud-migration-lab-3", "lab-4"),
     ],
 )
 def test_context_rejects_wrong_release_target(field: str, value: str, message: str) -> None:
@@ -73,6 +73,27 @@ def test_context_rejects_wrong_release_target(field: str, value: str, message: s
     context[field] = value
     with pytest.raises(ValueError, match=message):
         release_gate.validate_context(context)
+
+
+@pytest.mark.parametrize("name", ["", "contains spaces", "contains/slash", "x" * 101])
+def test_context_rejects_invalid_oci_compartment_name(name: str) -> None:
+    context = _context()
+    context["compartment"] = name
+    with pytest.raises(ValueError, match="compartment name"):
+        release_gate.validate_context(context)
+
+
+def test_context_accepts_editable_new_and_existing_compartments() -> None:
+    for mode, name in (("new", "oci-aidp-cloud-migration-lab-5"), ("existing", "Shared_Lab.2026")):
+        context = _context()
+        context["compartment_mode"] = mode
+        context["compartment"] = name
+        release_gate.validate_context(context)
+
+    invalid = _context()
+    invalid["compartment_mode"] = "auto"
+    with pytest.raises(ValueError, match="mode"):
+        release_gate.validate_context(invalid)
 
 
 def test_context_rejects_untrusted_repository_and_short_sha() -> None:
@@ -134,6 +155,13 @@ def test_plan_rejects_forbidden_resource_and_customer_managed_bucket_key() -> No
     bucket_plan["resource_changes"][0]["change"]["after"]["kms_key_id"] = "ocid1.key.oc1..test"  # type: ignore[index]
     with pytest.raises(ValueError, match="customer-managed"):
         release_gate.validate_plan(bucket_plan)
+
+
+def test_plan_accepts_provider_computed_bucket_key_when_hcl_does_not_assign_one() -> None:
+    bucket_plan = _plan(resource_type="oci_objectstorage_bucket")
+    bucket_plan["resource_changes"][0]["change"]["after"]["kms_key_id"] = None  # type: ignore[index]
+    bucket_plan["resource_changes"][0]["change"]["after_unknown"] = {"kms_key_id": True}  # type: ignore[index]
+    release_gate.validate_plan(bucket_plan)
 
 
 def test_cli_fails_closed_on_invalid_plan(tmp_path: Path) -> None:

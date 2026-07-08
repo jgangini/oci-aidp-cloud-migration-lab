@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import oci
 
-from release_gate import validate_context, validate_source
+from release_gate import compartment_target, validate_context, validate_source
 
 
 E5_SHAPE = "VM.Standard.E5.Flex"
@@ -53,28 +53,38 @@ def _list_all(call: Callable[..., Any], **kwargs: Any) -> list[Any]:
         kwargs["page"] = page
 
 
-def _require_lab4_available(identity: Any, aidp: Any, tenancy_id: str) -> None:
-    matches = _list_all(
+def _has_active_aidp_work_request(aidp: Any, compartment_ids: set[str]) -> bool:
+    return any(
+        str(getattr(item, "compartment_id", "")) in compartment_ids
+        and str(getattr(item, "status", "")).upper() in ACTIVE_WORK_REQUEST_STATES
+        for item in _list_all(aidp.list_work_requests)
+    )
+
+
+def _require_compartment_target(identity: Any, aidp: Any, tenancy_id: str, target: str, mode: str) -> str:
+    compartments = _list_all(
         identity.list_compartments,
         compartment_id=tenancy_id,
         compartment_id_in_subtree=True,
         access_level="ANY",
-        name="oci-aidp-cloud-migration-lab-4",
     )
+    matches = [
+        item
+        for item in compartments
+        if str(getattr(item, "name", "")).casefold() == target.casefold()
+    ]
+    active = [item for item in matches if str(getattr(item, "lifecycle_state", "")).upper() == "ACTIVE"]
+    if mode == "existing":
+        if len(active) != 1:
+            raise RuntimeError(f"existing compartment {target} was not found or is ambiguous")
+        return f"{target} exists and is ACTIVE"
     occupied = [item for item in matches if str(getattr(item, "lifecycle_state", "")).upper() != "DELETED"]
     if occupied:
-        raise RuntimeError("compartment oci-aidp-cloud-migration-lab-4 is not available")
+        raise RuntimeError(f"compartment {target} is not available to create")
     deleted_ids = {str(item.id) for item in matches if getattr(item, "id", None)}
-    if not deleted_ids:
-        return
-    conflicts = [
-        item
-        for item in _list_all(aidp.list_work_requests)
-        if str(getattr(item, "compartment_id", "")) in deleted_ids
-        and str(getattr(item, "status", "")).upper() in ACTIVE_WORK_REQUEST_STATES
-    ]
-    if conflicts:
-        raise RuntimeError("a previous lab-4 AIDP work request is still active")
+    if deleted_ids and _has_active_aidp_work_request(aidp, deleted_ids):
+        raise RuntimeError(f"a previous AIDP work request is still active for {target}")
+    return f"{target} is available to create"
 
 
 def _require_vault_slots(limits: Any, tenancy_id: str) -> float:
@@ -120,7 +130,7 @@ def select_inputs(
     limits_factory: Callable[[dict[str, Any]], Any] = oci.limits.LimitsClient,
     aidp_factory: Callable[[dict[str, Any]], Any] = oci.ai_data_platform.AiDataPlatformClient,
 ) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
+    target, mode = compartment_target(context)
     region = str(context.get("region") or sdk_config.get("region") or "").strip()
     tenancy_id = str(sdk_config.get("tenancy") or "").strip()
     if not region or not tenancy_id:
@@ -132,7 +142,13 @@ def select_inputs(
     regional_config = dict(sdk_config)
     regional_config["region"] = region
     identity = identity_factory(regional_config)
-    _require_lab4_available(identity, aidp_factory(regional_config), tenancy_id)
+    compartment_message = _require_compartment_target(
+        identity,
+        aidp_factory(regional_config),
+        tenancy_id,
+        target,
+        mode,
+    )
     vault_slots = _require_vault_slots(limits_factory(regional_config), tenancy_id)
     home_region = _home_region(identity, tenancy_id)
     _require_public_signing_certificate(
@@ -184,14 +200,14 @@ def select_inputs(
                 },
                 "events": [
                     {
-                        "name": "Immutable v2 lab-4 source",
+                        "name": "Immutable v2.0.1 source",
                         "status": "passed",
-                        "message": "v2.0.0 source context and deployment source passed",
+                        "message": "v2.0.1 source context and deployment source passed",
                     },
                     {
-                        "name": "Lab-4 compartment and work requests",
+                        "name": "Compartment availability",
                         "status": "passed",
-                        "message": "exact compartment name is available and has no conflicting AIDP work request",
+                        "message": compartment_message,
                     },
                     {
                         "name": "Virtual Vault capacity",

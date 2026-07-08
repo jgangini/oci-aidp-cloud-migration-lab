@@ -28,6 +28,23 @@ def test_deploy_studio_manifest_contract() -> None:
     assert manifest["presentation"]["title"] == "OCI AI Data Platform Cloud Migration Lab"
     assert manifest["presentation"]["tags"] == ["VM", "VCN", "AI Data Platform", "Object Storage Bucket", "IAM Policies"]
     assert manifest["presentation"]["image"] == "/assets/oci-aidp-cloud-migration-lab.png"
+    assert [step["key"] for step in manifest["run_steps"]] == [
+        "queue",
+        "credentials",
+        "compartment",
+        "policies",
+        "stack",
+        "plan",
+        "apply",
+        "network",
+        "bucket",
+        "compute",
+        "application",
+        "artifacts",
+        "email",
+        "complete",
+    ]
+    assert not {"database", "wallet"} & {step["key"] for step in manifest["run_steps"]}
     assert [field["name"] for field in manifest["preflight"]["runtime_fields"]] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
     assert manifest["preflight"]["output_inputs"] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
     assert (root / manifest["preflight"]["entrypoint"]).is_file()

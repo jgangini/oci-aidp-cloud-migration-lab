@@ -13,11 +13,11 @@ EXPECTED_REPOSITORIES = {
     "https://github.com/jgangini/oci-aidp-cloud-migration-lab",
     "https://github.com/jgangini/oci-aidp-cloud-migration-lab.git",
 }
-EXPECTED_REF = "v2.0.0"
+EXPECTED_REF = "v2.0.1"
 EXPECTED_REGION = "us-chicago-1"
-EXPECTED_COMPARTMENT = "oci-aidp-cloud-migration-lab-4"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_COMPARTMENT_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _SOURCE_PATTERNS = (
     ("lab-2/lab-3 reference", re.compile(r"oci-aidp-cloud-migration-lab-(?:2|3)(?![0-9])", re.IGNORECASE)),
     (
@@ -48,6 +48,26 @@ _SOURCE_PATTERNS = (
 )
 
 
+def _compartment_name(context: dict[str, Any]) -> str:
+    value = context.get("compartment", "")
+    name = value.strip() if isinstance(value, str) else ""
+    if not _COMPARTMENT_NAME.fullmatch(name):
+        raise ValueError("compartment name must use 1-100 letters, numbers, periods, hyphens, or underscores")
+    return name
+
+
+def _compartment_mode(context: dict[str, Any]) -> str:
+    value = context.get("compartment_mode", "")
+    mode = value.strip().lower() if isinstance(value, str) else ""
+    if mode not in {"new", "existing"}:
+        raise ValueError("compartment mode must be new or existing")
+    return mode
+
+
+def compartment_target(context: dict[str, Any]) -> tuple[str, str]:
+    return _compartment_name(context), _compartment_mode(context)
+
+
 def validate_context(context: dict[str, Any]) -> None:
     source = context.get("source") or {}
     if context.get("project_id") != EXPECTED_PROJECT:
@@ -60,8 +80,7 @@ def validate_context(context: dict[str, Any]) -> None:
         raise ValueError("release requires a full lowercase 40-character source SHA")
     if context.get("region") != EXPECTED_REGION:
         raise ValueError(f"release requires region {EXPECTED_REGION}")
-    if context.get("compartment") != EXPECTED_COMPARTMENT:
-        raise ValueError(f"release requires a new compartment named {EXPECTED_COMPARTMENT}")
+    compartment_target(context)
 
 
 def _deployment_files(terraform_root: Path) -> list[Path]:
@@ -99,6 +118,14 @@ def _has_nonempty_key(value: Any, key: str) -> bool:
     return False
 
 
+def _planned_values(resource: dict[str, Any]) -> dict[str, Any]:
+    change = resource.get("change")
+    if not isinstance(change, dict):
+        return {}
+    after = change.get("after")
+    return after if isinstance(after, dict) else {}
+
+
 def validate_plan(plan: dict[str, Any]) -> None:
     managed = [change for change in plan.get("resource_changes") or [] if change.get("mode", "managed") == "managed"]
     if not managed:
@@ -115,12 +142,12 @@ def validate_plan(plan: dict[str, Any]) -> None:
         resource_type = str(resource.get("type") or "").lower()
         if "ai_data_platform" in resource_type and "volume" in resource_type:
             raise ValueError(f"release plan contains an external AIDP volume in {address}")
-        if resource_type == "oci_objectstorage_bucket" and _has_nonempty_key(resource.get("change"), "kms_key_id"):
+        if resource_type == "oci_objectstorage_bucket" and _has_nonempty_key(_planned_values(resource), "kms_key_id"):
             raise ValueError(f"release plan assigns a customer-managed key to {address}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate the immutable v2 lab-4 release contract.")
+    parser = argparse.ArgumentParser(description="Validate the immutable fresh-only v2 AIDP lab release contract.")
     parser.add_argument("--source-root", type=Path, default=Path(__file__).parent)
     parser.add_argument("--context-json", type=Path)
     parser.add_argument("--plan-json", type=Path)

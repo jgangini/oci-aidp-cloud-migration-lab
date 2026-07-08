@@ -18,6 +18,22 @@
     "image_alt": "OCI AI Data Platform Cloud Migration Lab architecture",
     "href": "https://github.com/jgangini/oci-aidp-cloud-migration-lab"
   },
+  "run_steps": [
+    {"key": "queue", "label": "Queue"},
+    {"key": "credentials", "label": "OCI credentials"},
+    {"key": "compartment", "label": "Lab compartment"},
+    {"key": "policies", "label": "Identity and IAM"},
+    {"key": "stack", "label": "Resource Manager stack"},
+    {"key": "plan", "label": "Terraform plan"},
+    {"key": "apply", "label": "Terraform apply"},
+    {"key": "network", "label": "VCN and public subnet"},
+    {"key": "bucket", "label": "Medallion Object Storage"},
+    {"key": "compute", "label": "Registration VM"},
+    {"key": "application", "label": "AIDP workspace, catalog and RBAC"},
+    {"key": "artifacts", "label": "Lab access summary"},
+    {"key": "email", "label": "Access email"},
+    {"key": "complete", "label": "Lab ready"}
+  ],
   "form": {
     "fields": [
       {

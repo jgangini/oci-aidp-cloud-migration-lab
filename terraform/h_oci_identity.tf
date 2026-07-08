@@ -41,6 +41,21 @@ resource "oci_identity_domains_user" "provisioner" {
   user_type     = "Service"
   force_delete  = true
 
+  # Identity Domains normally requires one primary email even for a non-interactive
+  # API principal. example.com is reserved and notifications stay disabled below.
+  emails {
+    type     = "work"
+    value    = "aidp-provisioner-${local.suffix}@example.com"
+    primary  = true
+    verified = true
+  }
+
+  emails {
+    type     = "recovery"
+    value    = "aidp-provisioner-${local.suffix}@example.com"
+    verified = true
+  }
+
   urnietfparamsscimschemasoracleidcsextensioncapabilities_user {
     can_use_api_keys                 = true
     can_use_auth_tokens              = false
@@ -50,6 +65,10 @@ resource "oci_identity_domains_user" "provisioner" {
     can_use_db_credentials           = false
     can_use_oauth2client_credentials = false
     can_use_smtp_credentials         = false
+  }
+
+  urnietfparamsscimschemasoracleidcsextensionuser_user {
+    bypass_notification = true
   }
 }
 

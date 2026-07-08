@@ -18,6 +18,13 @@ def test_provisioner_is_api_only_without_formal_service_user_flag() -> None:
     assert 'user_type     = "Service"' in provisioner
     assert "service_user = true" not in provisioner
     assert "\n  password" not in provisioner
+    assert provisioner.count("emails {") == 2
+    assert 'type     = "work"' in provisioner
+    assert 'type     = "recovery"' in provisioner
+    assert 'value    = "aidp-provisioner-${local.suffix}@example.com"' in provisioner
+    assert "primary  = true" in provisioner
+    assert provisioner.count("verified = true") == 2
+    assert "bypass_notification = true" in provisioner
     assert "can_use_api_keys                 = true" in provisioner
     assert "can_use_console                  = false" in provisioner
     assert "can_use_console_password         = false" in provisioner
