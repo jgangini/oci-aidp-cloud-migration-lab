@@ -58,6 +58,34 @@ output "pending_group_ocid" {
   value = oci_identity_domains_group.pending.ocid
 }
 
+output "provisioner_user_ocid" {
+  description = "OCI user OCID of the dedicated AIDP technical provisioner."
+  value       = oci_identity_domains_user.provisioner.ocid
+}
+
+output "provisioner_group_ocid" {
+  description = "OCI group OCID mapped to the AIDP_LAB_PROVISIONER role."
+  value       = oci_identity_domains_group.provisioner.ocid
+}
+
+output "home_region" {
+  description = "Tenancy home region used for Identity API-key rotation."
+  value       = var.home_region
+}
+
+output "aidp_catalog_name" {
+  value = "aidp_lab"
+}
+
+output "aidp_shared_compute_name" {
+  value = "aidp_lab_shared_compute"
+}
+
+output "aidp_external_volume_count" {
+  description = "Fresh-only v2 contract: post-apply creates no external volumes."
+  value       = 0
+}
+
 output "identity_domain_url" {
   value = local.default_domain.url
 }

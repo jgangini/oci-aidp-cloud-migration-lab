@@ -7,11 +7,14 @@ from typing import Any, Callable
 
 import oci
 
+from release_gate import validate_context, validate_source
+
 
 E5_SHAPE = "VM.Standard.E5.Flex"
 E4_SHAPE = "VM.Standard.E4.Flex"
 E3_SHAPE = "VM.Standard.E3.Flex"
 SUPPORTED_SHAPES = (E5_SHAPE, E4_SHAPE, E3_SHAPE)
+ACTIVE_WORK_REQUEST_STATES = {"ACCEPTED", "IN_PROGRESS", "WAITING", "NEEDS_ATTENTION", "CANCELING"}
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -38,6 +41,49 @@ def _candidate_shapes(preferred: str) -> list[str]:
     return list(SUPPORTED_SHAPES[SUPPORTED_SHAPES.index(preferred) :])
 
 
+def _list_all(call: Callable[..., Any], **kwargs: Any) -> list[Any]:
+    items: list[Any] = []
+    while True:
+        response = call(**kwargs)
+        data = response.data
+        items.extend(data if isinstance(data, list) else (getattr(data, "items", None) or []))
+        page = (getattr(response, "headers", None) or {}).get("opc-next-page")
+        if not page:
+            return items
+        kwargs["page"] = page
+
+
+def _require_lab4_available(identity: Any, aidp: Any, tenancy_id: str) -> None:
+    matches = _list_all(
+        identity.list_compartments,
+        compartment_id=tenancy_id,
+        compartment_id_in_subtree=True,
+        access_level="ANY",
+        name="oci-aidp-cloud-migration-lab-4",
+    )
+    occupied = [item for item in matches if str(getattr(item, "lifecycle_state", "")).upper() != "DELETED"]
+    if occupied:
+        raise RuntimeError("compartment oci-aidp-cloud-migration-lab-4 is not available")
+    deleted_ids = {str(item.id) for item in matches if getattr(item, "id", None)}
+    if not deleted_ids:
+        return
+    conflicts = [
+        item
+        for item in _list_all(aidp.list_work_requests)
+        if str(getattr(item, "compartment_id", "")) in deleted_ids
+        and str(getattr(item, "status", "")).upper() in ACTIVE_WORK_REQUEST_STATES
+    ]
+    if conflicts:
+        raise RuntimeError("a previous lab-4 AIDP work request is still active")
+
+
+def _require_vault_slots(limits: Any, tenancy_id: str) -> float:
+    available = limits.get_resource_availability("kms", "virtual-vault-count", tenancy_id).data.available
+    if available is None or float(available) < 2:
+        raise RuntimeError("OCI requires at least two available virtual Vault slots in us-chicago-1")
+    return float(available)
+
+
 def _require_public_signing_certificate(
     sdk_config: dict[str, Any],
     tenancy_id: str,
@@ -54,6 +100,9 @@ def _require_public_signing_certificate(
     ).data
     if len(domains) != 1 or not getattr(domains[0], "url", None):
         raise RuntimeError("OCI did not return one active Default Identity Domain")
+    domain_state = str(getattr(domains[0], "lifecycle_state", getattr(domains[0], "state", "ACTIVE"))).upper()
+    if domain_state != "ACTIVE":
+        raise RuntimeError("Default Identity Domain must be ACTIVE")
     settings = identity_domains_factory(home_config, service_endpoint=str(domains[0].url)).list_settings(
         limit=2,
         attributes="id,signingCertPublicAccess",
@@ -68,6 +117,8 @@ def select_inputs(
     identity_factory: Callable[[dict[str, Any]], Any] = oci.identity.IdentityClient,
     compute_factory: Callable[[dict[str, Any]], Any] = oci.core.ComputeClient,
     identity_domains_factory: Callable[..., Any] = oci.identity_domains.IdentityDomainsClient,
+    limits_factory: Callable[[dict[str, Any]], Any] = oci.limits.LimitsClient,
+    aidp_factory: Callable[[dict[str, Any]], Any] = oci.ai_data_platform.AiDataPlatformClient,
 ) -> dict[str, Any]:
     inputs = context.get("inputs") or {}
     region = str(context.get("region") or sdk_config.get("region") or "").strip()
@@ -81,6 +132,8 @@ def select_inputs(
     regional_config = dict(sdk_config)
     regional_config["region"] = region
     identity = identity_factory(regional_config)
+    _require_lab4_available(identity, aidp_factory(regional_config), tenancy_id)
+    vault_slots = _require_vault_slots(limits_factory(regional_config), tenancy_id)
     home_region = _home_region(identity, tenancy_id)
     _require_public_signing_certificate(
         sdk_config,
@@ -130,6 +183,21 @@ def select_inputs(
                     "availability_domain_index": availability_domain_index,
                 },
                 "events": [
+                    {
+                        "name": "Immutable v2 lab-4 source",
+                        "status": "passed",
+                        "message": "v2.0.0 source context and deployment source passed",
+                    },
+                    {
+                        "name": "Lab-4 compartment and work requests",
+                        "status": "passed",
+                        "message": "exact compartment name is available and has no conflicting AIDP work request",
+                    },
+                    {
+                        "name": "Virtual Vault capacity",
+                        "status": "passed",
+                        "message": f"{vault_slots:g} regional slots available",
+                    },
                     {"name": "OCI tenancy home region", "status": "passed", "message": home_region},
                     {
                         "name": "Identity Domain signing certificate access",
@@ -165,7 +233,10 @@ def _load_sdk_config() -> dict[str, Any]:
 
 def main() -> int:
     try:
-        _write_result(select_inputs(_read_json_env("DEPLOY_STUDIO_CONTEXT"), _load_sdk_config()))
+        context = _read_json_env("DEPLOY_STUDIO_CONTEXT")
+        validate_context(context)
+        validate_source(Path(__file__).parent)
+        _write_result(select_inputs(context, _load_sdk_config()))
         return 0
     except Exception as exc:  # The runner receives a bounded, secret-free failure event.
         _write_result(

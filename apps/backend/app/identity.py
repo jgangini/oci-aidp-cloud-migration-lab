@@ -37,7 +37,9 @@ class IdentityRace(Exception):
 class RegistrationResult:
     status: str
     user_id: str
+    user_ocid: str
     email: str
+    was_developer: bool = False
 
 
 def read_oauth_secret(settings: Settings) -> str:
@@ -136,20 +138,27 @@ class IdentityClient:
         if response.status_code in {400, 422}:
             raise IdentityRejected(_safe_error(response))
         response.raise_for_status()
-        user = response.json()
-        activation = await self._request(
-            "PUT",
-            f"/admin/v1/UserActivationInitiator/{user['id']}",
-            headers={"Content-Type": "application/scim+json"},
-            json={
-                "schemas": [
-                    "urn:ietf:params:scim:schemas:oracle:idcs:UserActivationInitiator"
-                ]
-            },
-        )
-        if activation.status_code not in {200, 201, 204, 409}:
-            activation.raise_for_status()
-        return user
+        return response.json()
+
+    async def ensure_activation_email(self, user_id: str) -> None:
+        try:
+            response = await self._request(
+                "PUT",
+                f"/admin/v1/UserActivationInitiator/{user_id}",
+                headers={"Content-Type": "application/scim+json"},
+                json={
+                    "schemas": [
+                        "urn:ietf:params:scim:schemas:oracle:idcs:UserActivationInitiator"
+                    ]
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise IdentityPending("User exists; activation email initiation is still in progress") from exc
+        if response.status_code in {200, 201, 204, 409}:
+            return
+        if response.status_code in {400, 422}:
+            raise IdentityRejected(_safe_error(response))
+        raise IdentityPending("User exists; activation email initiation is still in progress")
 
     async def _is_member(self, group_id: str, user_id: str) -> bool:
         response = await self._request(
@@ -191,7 +200,15 @@ class IdentityClient:
         )
         response.raise_for_status()
 
-    async def register(self, name: str, email: str) -> RegistrationResult:
+    async def prepare_registration(self, name: str, email: str) -> RegistrationResult:
+        try:
+            return await self._prepare_registration(name, email)
+        except (IdentityConflict, IdentityPending, IdentityRejected):
+            raise
+        except httpx.HTTPError as exc:
+            raise IdentityPending("Identity Domains is still reconciling this registration") from exc
+
+    async def _prepare_registration(self, name: str, email: str) -> RegistrationResult:
         user = await self.find_user(email)
         created = False
         if not user:
@@ -205,18 +222,33 @@ class IdentityClient:
                     if user:
                         break
                 if not user:
-                    raise IdentityConflict("Identity Domains user creation conflicted but no matching user exists")
-        user_id = str(user["id"])
+                    raise IdentityPending(
+                        "Identity Domains accepted a concurrent user creation that is not visible yet"
+                    )
+        user_id, user_ocid = _user_coordinates(user)
+        was_developer = await self._is_member(self.settings.developer_group_id, user_id)
+        was_pending = await self._is_member(self.settings.pending_group_id, user_id)
+        if not (was_developer or was_pending):
+            await self.ensure_activation_email(user_id)
         try:
-            if await self._is_member(self.settings.developer_group_id, user_id):
-                await self.remove_member(self.settings.pending_group_id, user_id)
-                return RegistrationResult("active", user_id, email)
             await self.add_member(self.settings.pending_group_id, user_id)
+            await self.remove_member(self.settings.developer_group_id, user_id)
+        except Exception as exc:
+            raise IdentityPending("User created; pending access reconciliation is still in progress") from exc
+        return RegistrationResult(
+            "created" if created else "reconciled",
+            user_id,
+            user_ocid,
+            email,
+            was_developer,
+        )
+
+    async def activate_registration(self, user_id: str) -> None:
+        try:
             await self.add_member(self.settings.developer_group_id, user_id)
             await self.remove_member(self.settings.pending_group_id, user_id)
         except Exception as exc:
-            raise IdentityPending("User created; group reconciliation is pending") from exc
-        return RegistrationResult("created" if created else "reconciled", user_id, email)
+            raise IdentityPending("Lab material is ready; developer access activation is still in progress") from exc
 
     async def delete_lab_user(self, user_id: str) -> bool:
         response = await self._request("GET", f"/admin/v1/Users/{user_id}")
@@ -243,6 +275,7 @@ class IdentityClient:
             raise IdentityConflict("Only users created by this lab can be deleted")
         return {
             "id": str(user["id"]),
+            "ocid": _user_coordinates(user)[1],
             "email": str(user.get("userName", "")),
         }
 
@@ -265,7 +298,7 @@ class IdentityClient:
                     "filter": filter_expression,
                     "startIndex": start_index,
                     "count": 100,
-                    "attributes": "id,userName,displayName,name,emails,active,externalId",
+                    "attributes": "id,ocid,userName,displayName,name,emails,active,externalId",
                 },
             )
             response.raise_for_status()
@@ -318,21 +351,37 @@ class LocalIdentityClient:
     async def healthcheck(self) -> None:
         return None
 
-    async def register(self, name: str, email: str) -> RegistrationResult:
+    async def prepare_registration(self, name: str, email: str) -> RegistrationResult:
         normalized_email = email.casefold()
         for user in self.users.values():
             if user["email"].casefold() == normalized_email:
-                return RegistrationResult("reconciled", user["id"], user["email"])
+                was_developer = user["status"] == "active"
+                user["status"] = "pending"
+                return RegistrationResult(
+                    "reconciled",
+                    user["id"],
+                    user["ocid"],
+                    user["email"],
+                    was_developer,
+                )
         user_id = uuid4().hex
+        user_ocid = f"ocid1.user.oc1..local{uuid4().hex}"
         self.users[user_id] = {
             "id": user_id,
+            "ocid": user_ocid,
             "name": name,
             "email": email,
-            "status": "active",
+            "status": "pending",
             "active": True,
             "managed": True,
         }
-        return RegistrationResult("created", user_id, email)
+        return RegistrationResult("created", user_id, user_ocid, email)
+
+    async def activate_registration(self, user_id: str) -> None:
+        user = self.users.get(user_id)
+        if not user:
+            raise IdentityPending("Local lab user is not ready")
+        user["status"] = "active"
 
     async def list_lab_users(self) -> list[dict[str, Any]]:
         return sorted(self.users.values(), key=lambda item: item["email"].casefold())
@@ -344,7 +393,7 @@ class LocalIdentityClient:
         user = self.users.get(user_id)
         if not user:
             return None
-        return {"id": user_id, "email": str(user["email"])}
+        return {"id": user_id, "ocid": str(user["ocid"]), "email": str(user["email"])}
 
 
 def _scim_literal(value: str) -> str:
@@ -361,6 +410,16 @@ def _user_has_email(user: dict[str, Any], email: str) -> bool:
             if isinstance(item, dict)
         )
     return email.casefold() in values
+
+
+def _user_coordinates(user: dict[str, Any]) -> tuple[str, str]:
+    user_id = str(user.get("id") or "")
+    user_ocid = str(user.get("ocid") or "")
+    if not user_id:
+        raise IdentityPending("Identity Domains has not published the user identifier yet")
+    if not user_ocid.startswith("ocid1.user."):
+        raise IdentityPending("Identity Domains has not published the OCI user OCID yet")
+    return user_id, user_ocid
 
 
 def _safe_error(response: httpx.Response) -> str:

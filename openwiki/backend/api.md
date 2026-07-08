@@ -7,13 +7,13 @@ The backend is a FastAPI service in [`apps/backend/app/main.py`](../apps/backend
 - admin credentials: `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`
 - registration gate: `REGISTRATION_CODE_HASH`
 - OCI identity: `IDENTITY_DOMAIN_URL`, `IDENTITY_OAUTH_CLIENT_ID`, `IDENTITY_OAUTH_CLIENT_SECRET` or `OAUTH_SECRET_OCID`, `IDENTITY_DEVELOPER_GROUP_ID`, `IDENTITY_PENDING_GROUP_ID`
-- AIDP runtime: `AIDP_PLATFORM_ID`, `AIDP_WORKSPACE_NAME`, `AIDP_REGION`, and optional `AIDP_WORKBENCH_URL`
+- AIDP runtime: `AIDP_PLATFORM_ID`, `AIDP_WORKSPACE_NAME`, `AIDP_REGION`, `OCI_CONFIG_FILE`, `OBJECTSTORAGE_NAMESPACE`, `BUCKET_NAME`, and optional `AIDP_WORKBENCH_URL`
 - runtime behavior: `SESSION_SECRET_FILE`, `COOKIE_SECURE`, `LOCAL_DEVELOPMENT_MODE`
 
 `Settings.identity_ready()` allows local development mode to bypass the OCI identity requirements.
 
 ## Public routes
-- `GET /api/health` — verifies the identity service is usable before reporting healthy
+- `GET /api/health` — verifies OAuth/Identity and the service-key path to the required AIDP workspace, catalog, shared compute, and exact data bucket before reporting healthy
 - `GET /api/public/config` — exposes the lab name and registration code pattern
 - `POST /api/register` — validates the user payload and registration code, then creates or reconciles a lab user
 
@@ -32,17 +32,25 @@ Administrator access is protected by the `__Host-aidp_lab_admin` cookie and the 
 1. finds an Identity Domains user by email/userName
 2. rejects unmanaged matches that predate the lab
 3. creates new users with `externalId == LAB_MARKER`
-4. adds and removes group membership to move users from pending to active
-5. deletes only users created by the lab
+4. adds the user to pending before participant provisioning starts
+5. promotes the user to developers and removes pending only after provisioning succeeds
+6. deletes only users created by the lab
 
-The client treats group reconciliation as eventually consistent. When membership updates fail after user creation, the API returns a pending state rather than pretending the user is fully active.
+The client treats Identity and AIDP reconciliation as eventually consistent. `POST /api/register` is idempotent and may return `202 pending` while identity, workspace, schemas, content, or permissions are being reconciled. The industry recorded for an existing participant is immutable; a conflicting selection returns `409` with instructions to delete and recreate that participant.
+
+## AIDP participant flow
+The AIDP client authenticates with the API-key config at `OCI_CONFIG_FILE`; it does not fall back to an instance principal. An opaque participant key—not an email address—names `/Workspace/lab-users/<key>/<industry>`, the personal job, and four schemas. The provisioner creates four deterministic source CSVs and four notebooks, then aligns permissions before Identity promotion.
+
+The authoritative participant state is `/Workspace/lab-users/.control/<key>.json`, a provisioner-only sibling of the personal folders. User-editable manifests and bucket objects are never trusted to choose an industry, decide whether content may be overwritten, or scope deletion.
+
+RBAC is exact: pending has workspace `USER`; developers have workspace `USER`, catalog `SELECT`, and shared compute `USE`; the provisioner has workspace `USER`, catalog `ADMIN`, compute `USE`, and root-folder `ADMIN`; the participant has root `READ` without cascade, own-folder `ADMIN` with cascade, own-job `MANAGE`, and schema `ADMIN` on all four personal schemas.
 
 ## Security rules to keep intact
 - Registration code and admin password are verified through PBKDF2 hashes, not plaintext values.
 - The backend never exposes OAuth secrets or upstream error details to clients.
 - Session cookies are `HttpOnly`, `SameSite=strict`, path-scoped, and use `__Host-` naming.
 - Rate limiting exists for both registration and admin login.
-- `GET /api/health` should stay strict enough to fail when Identity Domains cannot be used.
+- `GET /api/health` must fail when OAuth/Identity is unusable, technical request signing fails, or the required workspace/catalog/compute/bucket cannot be reached. It must not expose upstream bodies or credentials.
 
 ## Tests that matter
 [`apps/backend/tests/test_api.py`](../apps/backend/tests/test_api.py) covers the critical behaviors:

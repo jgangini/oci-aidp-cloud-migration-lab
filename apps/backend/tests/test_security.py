@@ -1,7 +1,7 @@
 import base64
 import hashlib
 
-from app.security import RateLimiter, hash_secret, issue_session, verify_secret, verify_session
+from app.security import RateLimiter, hash_secret, issue_session, opaque_rate_limit_key, verify_secret, verify_session
 
 
 def test_pbkdf2_round_trip_and_wrong_value() -> None:
@@ -32,4 +32,12 @@ def test_rate_limiter_is_windowed() -> None:
     assert limiter.allow("ip", now=0)
     assert limiter.allow("ip", now=1)
     assert not limiter.allow("ip", now=2)
+    assert limiter.retry_after("ip", now=2) == 8
     assert limiter.allow("ip", now=10)
+
+
+def test_rate_limit_keys_are_stable_and_opaque() -> None:
+    first = opaque_rate_limit_key(b"k" * 32, " Ada@Example.com ")
+    assert first == opaque_rate_limit_key(b"k" * 32, "ada@example.com")
+    assert first != opaque_rate_limit_key(b"k" * 32, "grace@example.com")
+    assert "ada" not in first

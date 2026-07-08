@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+
+MODULE_PATH = Path(__file__).parents[1] / "release_gate.py"
+SPEC = importlib.util.spec_from_file_location("aidp_release_gate", MODULE_PATH)
+assert SPEC and SPEC.loader
+release_gate = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = release_gate
+SPEC.loader.exec_module(release_gate)
+
+
+def _context() -> dict[str, object]:
+    return {
+        "project_id": "oci-aidp-cloud-migration-lab",
+        "region": "us-chicago-1",
+        "compartment": "oci-aidp-cloud-migration-lab-4",
+        "source": {
+            "repository": "https://github.com/jgangini/oci-aidp-cloud-migration-lab.git",
+            "ref": "v2.0.0",
+            "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        },
+    }
+
+
+def _source(tmp_path: Path) -> Path:
+    root = tmp_path / "terraform"
+    root.mkdir()
+    (root / "f_oci_objectstorage_bucket.tf").write_text(
+        'resource "oci_objectstorage_bucket" "data" {\n  name = "aidp-data-safe"\n}\n',
+        encoding="utf-8",
+    )
+    return root
+
+
+def _plan(*, actions: list[str] | None = None, resource_type: str = "oci_core_instance") -> dict[str, object]:
+    return {
+        "resource_changes": [
+            {
+                "address": "oci_core_instance.lab",
+                "mode": "managed",
+                "type": resource_type,
+                "change": {"actions": actions or ["create"], "after": {"display_name": "aidp-lab"}},
+            }
+        ]
+    }
+
+
+def test_context_requires_exact_v2_lab4_source() -> None:
+    release_gate.validate_context(_context())
+    invalid = _context()
+    invalid["source"] = {**invalid["source"], "ref": "main"}  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="v2.0.0"):
+        release_gate.validate_context(invalid)
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("project_id", "other", "project_id"),
+        ("region", "us-ashburn-1", "us-chicago-1"),
+        ("compartment", "oci-aidp-cloud-migration-lab-3", "lab-4"),
+    ],
+)
+def test_context_rejects_wrong_release_target(field: str, value: str, message: str) -> None:
+    context = _context()
+    context[field] = value
+    with pytest.raises(ValueError, match=message):
+        release_gate.validate_context(context)
+
+
+def test_context_rejects_untrusted_repository_and_short_sha() -> None:
+    context = _context()
+    context["source"] = {**context["source"], "repository": "https://example.com/repo.git"}  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="trusted"):
+        release_gate.validate_context(context)
+    context = _context()
+    context["source"] = {**context["source"], "commit_sha": "abc123"}  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="40-character"):
+        release_gate.validate_context(context)
+
+
+@pytest.mark.parametrize(
+    "content,message",
+    [
+        ('resource "oci_opensearch_opensearch_cluster" "bad" {}', "OSCS/OpenSearch"),
+        ('payload = { volumeType = "EXTERNAL" }', "external AIDP volume"),
+        ('statement = "Allow any-user to manage vnics in tenancy"', "VNIC"),
+        ('statement = "Allow any-user to use subnets in tenancy"', "subnet"),
+        ('statement = "Allow any-user to use network-security-groups in tenancy"', "NSG"),
+        (
+            'statement = "Allow service objectstorage-us-chicago-1 to manage object-family in tenancy"',
+            "Object Storage deletion",
+        ),
+        ('name = "oci-aidp-cloud-migration-lab-2"', "lab-2/lab-3"),
+    ],
+)
+def test_source_rejects_forbidden_release_content(tmp_path: Path, content: str, message: str) -> None:
+    root = _source(tmp_path)
+    (root / "z_forbidden.tf").write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        release_gate.validate_source(root)
+
+
+def test_source_requires_oracle_managed_bucket_key(tmp_path: Path) -> None:
+    root = _source(tmp_path)
+    bucket = root / "f_oci_objectstorage_bucket.tf"
+    bucket.write_text(bucket.read_text(encoding="utf-8").replace("name =", "kms_key_id = var.key\n  name ="), encoding="utf-8")
+    with pytest.raises(ValueError, match="Oracle-managed"):
+        release_gate.validate_source(root)
+
+
+def test_source_accepts_minimal_safe_deployment(tmp_path: Path) -> None:
+    release_gate.validate_source(_source(tmp_path))
+
+
+def test_plan_accepts_only_create_actions() -> None:
+    release_gate.validate_plan(_plan())
+    for actions in (["no-op"], ["update"], ["delete"], ["create", "delete"]):
+        with pytest.raises(ValueError, match="fresh-only"):
+            release_gate.validate_plan(_plan(actions=actions))
+
+
+def test_plan_rejects_forbidden_resource_and_customer_managed_bucket_key() -> None:
+    with pytest.raises(ValueError, match="OSCS/OpenSearch"):
+        release_gate.validate_plan(_plan(resource_type="oci_opensearch_opensearch_cluster"))
+    bucket_plan = _plan(resource_type="oci_objectstorage_bucket")
+    bucket_plan["resource_changes"][0]["change"]["after"]["kms_key_id"] = "ocid1.key.oc1..test"  # type: ignore[index]
+    with pytest.raises(ValueError, match="customer-managed"):
+        release_gate.validate_plan(bucket_plan)
+
+
+def test_cli_fails_closed_on_invalid_plan(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_plan(actions=["update"])), encoding="utf-8")
+    assert release_gate.main(["--source-root", str(source), "--plan-json", str(plan_path)]) == 1

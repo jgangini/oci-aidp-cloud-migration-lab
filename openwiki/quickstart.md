@@ -25,6 +25,9 @@ The top-level README is the user-facing source of truth for safety constraints, 
 - Backend app: [`apps/backend/app/main.py`](../apps/backend/app/main.py)
 - Backend settings: [`apps/backend/app/config.py`](../apps/backend/app/config.py)
 - Identity client: [`apps/backend/app/identity.py`](../apps/backend/app/identity.py)
+- AIDP provisioning client: [`apps/backend/app/aidp.py`](../apps/backend/app/aidp.py)
+- Industry data contracts: [`apps/backend/app/industry_kits.py`](../apps/backend/app/industry_kits.py)
+- Medallion notebooks: [`apps/backend/app/notebooks.py`](../apps/backend/app/notebooks.py)
 - Security helpers: [`apps/backend/app/security.py`](../apps/backend/app/security.py)
 - Frontend entrypoint: [`apps/frontend/src/App.tsx`](../apps/frontend/src/App.tsx)
 - Frontend styles: [`apps/frontend/src/styles.css`](../apps/frontend/src/styles.css)
@@ -41,11 +44,13 @@ The top-level README is the user-facing source of truth for safety constraints, 
 - Terraform tests: [`terraform/tests/`](../terraform/tests/)
 
 ## Key concepts
-- The lab uses a single private Object Storage bucket with medallion prefixes `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/`.
-- The backend only talks to OCI Identity Domains when the required settings are present; local development can switch to an in-memory identity client.
+- The lab uses a single private `aidp-data-<suffix>` bucket with medallion prefixes `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/`; v2 uses OCI URIs and external tables, not external volumes or explicit OSCS/OpenSearch.
+- Participant folders and four per-participant schemas use an opaque key, never an email address.
+- Registration moves a user from pending to developers only after workspace, schemas, content, and permissions are complete.
+- AIDP access is split between pending, developer, provisioner, and per-participant grants; the provisioner uses a dedicated service API key rather than an instance-principal fallback.
 - Registration and administrator passwords are handled as PBKDF2 hashes, not plaintext secrets.
 - The admin session is an HMAC-signed cookie named `__Host-aidp_lab_admin`.
-- OCI-connected local development uses the same image as the VM, but with localhost-only ports and no restart policy.
+- OCI-connected local development uses the same image as the VM, localhost-only ports, a sanitized ignored OCI config, and read-only binds for that config and the original operator key.
 
 ## When changing the repo
 - Start by identifying which runtime mode you are touching: backend API, frontend UI, Terraform, or local operations.

@@ -5,13 +5,14 @@ import time
 import httpx
 
 from app.config import Settings
-from app.identity import IdentityClient, IdentityConflict, IdentityPending, IdentityRejected
+from app.identity import IdentityClient, IdentityConflict, IdentityPending, IdentityRejected, LocalIdentityClient
 
 
 def test_group_user_listing_paginates() -> None:
     starts: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert "ocid" in request.url.params["attributes"].split(",")
         start = int(request.url.params["startIndex"])
         starts.append(start)
         count = 100 if start == 1 else 1
@@ -72,14 +73,21 @@ def test_identity_domain_rejection_is_safe() -> None:
     asyncio.run(run())
 
 
-def test_created_user_receives_identity_activation_without_a_password() -> None:
+def test_prepare_registration_initiates_identity_activation_without_a_password() -> None:
     requests: list[tuple[str, str, dict]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else {}
         requests.append((request.method, request.url.path, body))
+        if request.method == "GET" and request.url.params.get("filter", "").startswith("userName"):
+            return httpx.Response(200, json={"Resources": [], "totalResults": 0})
         if request.method == "POST":
-            return httpx.Response(201, json={"id": "managed-user"})
+            return httpx.Response(
+                201,
+                json={"id": "managed-user", "ocid": "ocid1.user.oc1..managed"},
+            )
+        if request.method == "GET":
+            return httpx.Response(200, json={"Resources": []})
         return httpx.Response(200)
 
     async def run() -> None:
@@ -89,16 +97,146 @@ def test_created_user_receives_identity_activation_without_a_password() -> None:
         )
         client._token = "test-token"
         client._token_refresh_at = float("inf")
-        assert (await client.create_user("Ada Lovelace", "ada@example.com"))["id"] == "managed-user"
+        result = await client.prepare_registration("Ada Lovelace", "ada@example.com")
+        assert result.user_id == "managed-user"
         await client.close()
 
     asyncio.run(run())
-    assert "password" not in requests[0][2]
-    assert requests[1] == (
+    create_request = next(request for request in requests if request[:2] == ("POST", "/admin/v1/Users"))
+    activation_request = next(request for request in requests if "UserActivationInitiator" in request[1])
+    assert "password" not in create_request[2]
+    assert activation_request == (
         "PUT",
         "/admin/v1/UserActivationInitiator/managed-user",
         {"schemas": ["urn:ietf:params:scim:schemas:oracle:idcs:UserActivationInitiator"]},
     )
+
+
+def test_existing_managed_user_retries_activation_before_group_changes() -> None:
+    events: list[str] = []
+
+    class ExistingIdentity(IdentityClient):
+        async def find_user(self, email: str):
+            return {
+                "id": "managed-user",
+                "ocid": "ocid1.user.oc1..managed",
+                "userName": email,
+                "externalId": "lab",
+            }
+
+        async def ensure_activation_email(self, user_id: str) -> None:
+            events.append(f"activate:{user_id}")
+
+        async def _is_member(self, group_id: str, user_id: str) -> bool:
+            return False
+
+        async def add_member(self, group_id: str, user_id: str) -> None:
+            events.append(f"add:{group_id}")
+
+        async def remove_member(self, group_id: str, user_id: str) -> None:
+            events.append(f"remove:{group_id}")
+
+    async def run() -> None:
+        client = ExistingIdentity(
+            Settings(
+                identity_domain_url="https://identity.example.test",
+                developer_group_id="developers",
+                pending_group_id="pending",
+                lab_marker="lab",
+            ),
+            client=httpx.AsyncClient(),
+        )
+        await client.prepare_registration("Ada", "ada@example.com")
+        await client.close()
+
+    asyncio.run(run())
+    assert events == ["activate:managed-user", "add:pending", "remove:developers"]
+
+
+def test_pending_user_does_not_receive_duplicate_activation_email() -> None:
+    events: list[str] = []
+
+    class PendingIdentity(IdentityClient):
+        async def find_user(self, email: str):
+            return {
+                "id": "managed-user",
+                "ocid": "ocid1.user.oc1..managed",
+                "userName": email,
+                "externalId": "lab",
+            }
+
+        async def _is_member(self, group_id: str, user_id: str) -> bool:
+            return group_id == "pending"
+
+        async def ensure_activation_email(self, user_id: str) -> None:
+            raise AssertionError("pending users must not receive another activation email")
+
+        async def add_member(self, group_id: str, user_id: str) -> None:
+            events.append(f"add:{group_id}")
+
+        async def remove_member(self, group_id: str, user_id: str) -> None:
+            events.append(f"remove:{group_id}")
+
+    async def run() -> None:
+        client = PendingIdentity(
+            Settings(
+                identity_domain_url="https://identity.example.test",
+                developer_group_id="developers",
+                pending_group_id="pending",
+                lab_marker="lab",
+            ),
+            client=httpx.AsyncClient(),
+        )
+        await client.prepare_registration("Ada", "ada@example.com")
+        await client.close()
+
+    asyncio.run(run())
+    assert events == ["add:pending", "remove:developers"]
+
+
+def test_activation_transient_is_identity_pending_and_retryable() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path.endswith("/UserActivationInitiator/managed-user"):
+            attempts += 1
+            return httpx.Response(503 if attempts == 1 else 200)
+        if request.url.params.get("filter", "").startswith("userName"):
+            user = {
+                "id": "managed-user",
+                "ocid": "ocid1.user.oc1..managed",
+                "userName": "ada@example.com",
+                "emails": [{"value": "ada@example.com"}],
+                "externalId": "lab",
+            }
+            return httpx.Response(200, json={"Resources": [user], "totalResults": 1})
+        return httpx.Response(200, json={"Resources": []})
+
+    async def run() -> None:
+        client = IdentityClient(
+            Settings(
+                identity_domain_url="https://identity.example.test",
+                developer_group_id="developers",
+                pending_group_id="pending",
+                lab_marker="lab",
+            ),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        client._token = "test-token"
+        client._token_refresh_at = float("inf")
+        try:
+            await client.prepare_registration("Ada", "ada@example.com")
+        except IdentityPending:
+            pass
+        else:
+            raise AssertionError("transient activation failure must remain in identity phase")
+        result = await client.prepare_registration("Ada", "ada@example.com")
+        assert result.status == "reconciled"
+        await client.close()
+
+    asyncio.run(run())
+    assert attempts == 2
 
 
 def test_unmanaged_existing_account_is_never_modified() -> None:
@@ -130,7 +268,7 @@ def test_unmanaged_existing_account_is_never_modified() -> None:
         client._token = "test-token"
         client._token_refresh_at = float("inf")
         try:
-            await client.register("Ada", "ada@example.com")
+            await client.prepare_registration("Ada", "ada@example.com")
         except IdentityConflict:
             pass
         else:
@@ -160,10 +298,18 @@ def test_partial_group_failure_retries_idempotently() -> None:
             self.fail_developer_once = True
 
         async def find_user(self, email: str):
-            return {"id": "managed-user", "userName": email, "externalId": "lab"}
+            return {
+                "id": "managed-user",
+                "ocid": "ocid1.user.oc1..managed",
+                "userName": email,
+                "externalId": "lab",
+            }
 
         async def _is_member(self, group_id: str, user_id: str) -> bool:
             return self.developer if group_id == "developers" else self.pending
+
+        async def ensure_activation_email(self, user_id: str) -> None:
+            return None
 
         async def add_member(self, group_id: str, user_id: str) -> None:
             if group_id == "pending":
@@ -175,21 +321,100 @@ def test_partial_group_failure_retries_idempotently() -> None:
             self.developer = True
 
         async def remove_member(self, group_id: str, user_id: str) -> None:
-            self.pending = False
+            if group_id == "pending":
+                self.pending = False
+            else:
+                self.developer = False
 
     async def run() -> None:
         client = PartialIdentity()
+        result = await client.prepare_registration("Ada", "ada@example.com")
+        assert result.status == "reconciled"
+        assert not result.was_developer
+        assert client.pending and not client.developer
         try:
-            await client.register("Ada", "ada@example.com")
+            await client.activate_registration(result.user_id)
         except IdentityPending:
             pass
         else:
             raise AssertionError("first partial failure must return pending")
         assert client.pending and not client.developer
-        result = await client.register("Ada", "ada@example.com")
-        assert result.status == "reconciled"
+        await client.activate_registration(result.user_id)
         assert client.developer and not client.pending
         await client.close()
+
+    asyncio.run(run())
+
+
+def test_existing_developer_is_pending_until_activation_in_strict_group_order() -> None:
+    class ExistingDeveloperIdentity(IdentityClient):
+        def __init__(self) -> None:
+            super().__init__(
+                Settings(
+                    identity_domain_url="https://identity.example.test",
+                    developer_group_id="developers",
+                    pending_group_id="pending",
+                    lab_marker="lab",
+                ),
+                client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))),
+            )
+            self.members = {"developers": True, "pending": False}
+            self.events: list[str] = []
+
+        async def find_user(self, email: str):
+            return {
+                "id": "managed-user",
+                "ocid": "ocid1.user.oc1..managed",
+                "userName": email,
+                "externalId": "lab",
+            }
+
+        async def _is_member(self, group_id: str, user_id: str) -> bool:
+            return self.members[group_id]
+
+        async def add_member(self, group_id: str, user_id: str) -> None:
+            self.events.append(f"add:{group_id}")
+            self.members[group_id] = True
+
+        async def remove_member(self, group_id: str, user_id: str) -> None:
+            self.events.append(f"remove:{group_id}")
+            self.members[group_id] = False
+
+    async def run() -> None:
+        client = ExistingDeveloperIdentity()
+        result = await client.prepare_registration("Ada", "ada@example.com")
+        assert result.status == "reconciled"
+        assert result.was_developer
+        assert client.members == {"developers": False, "pending": True}
+        assert client.events == ["add:pending", "remove:developers"]
+
+        await client.activate_registration(result.user_id)
+        assert client.members == {"developers": True, "pending": False}
+        assert client.events == [
+            "add:pending",
+            "remove:developers",
+            "add:developers",
+            "remove:pending",
+        ]
+        await client.close()
+
+    asyncio.run(run())
+
+
+def test_local_identity_demotes_existing_active_user_during_preparation() -> None:
+    async def run() -> None:
+        client = LocalIdentityClient(Settings())
+        created = await client.prepare_registration("Ada", "ada@example.com")
+        await client.activate_registration(created.user_id)
+        assert (await client.list_lab_users())[0]["status"] == "active"
+
+        reconciled = await client.prepare_registration("Ada", "ADA@example.com")
+        assert reconciled.status == "reconciled"
+        assert reconciled.was_developer
+        assert (await client.list_lab_users())[0]["status"] == "pending"
+
+        await client.activate_registration(reconciled.user_id)
+        assert (await client.list_lab_users())[0]["status"] == "active"
 
     asyncio.run(run())
 
@@ -285,12 +510,15 @@ def test_concurrent_create_409_waits_for_managed_user_and_continues(monkeypatch)
         nonlocal searches
         if request.method == "POST" and request.url.path.endswith("/Users"):
             return httpx.Response(409, json={"detail": "duplicate"})
+        if request.method == "PUT" and "UserActivationInitiator" in request.url.path:
+            return httpx.Response(200)
         filter_expression = request.url.params.get("filter", "")
         if filter_expression.startswith("userName"):
             searches += 1
             resources = [] if searches < 4 else [
                 {
                     "id": "managed",
+                    "ocid": "ocid1.user.oc1..managed",
                     "userName": "ada@example.com",
                     "emails": [{"value": "ada@example.com"}],
                     "externalId": "lab",
@@ -298,7 +526,7 @@ def test_concurrent_create_409_waits_for_managed_user_and_continues(monkeypatch)
             ]
             return httpx.Response(200, json={"Resources": resources, "totalResults": len(resources)})
         if "groups.value" in filter_expression:
-            resources = [{"id": "managed"}] if "developers" in filter_expression else []
+            resources = [{"id": "managed"}] if "pending" in filter_expression else []
             return httpx.Response(200, json={"Resources": resources})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
@@ -314,8 +542,8 @@ def test_concurrent_create_409_waits_for_managed_user_and_continues(monkeypatch)
         )
         client._token = "test-token"
         client._token_refresh_at = float("inf")
-        result = await client.register("Ada", "ada@example.com")
-        assert result.status == "active"
+        result = await client.prepare_registration("Ada", "ada@example.com")
+        assert result.status == "reconciled"
         await client.close()
 
     asyncio.run(run())
@@ -354,7 +582,7 @@ def test_concurrent_create_409_rereads_foreign_user_as_conflict(monkeypatch) -> 
         client._token = "test-token"
         client._token_refresh_at = float("inf")
         try:
-            await client.register("Ada", "ada@example.com")
+            await client.prepare_registration("Ada", "ada@example.com")
         except IdentityConflict:
             pass
         else:
@@ -365,7 +593,7 @@ def test_concurrent_create_409_rereads_foreign_user_as_conflict(monkeypatch) -> 
     assert searches == 2
 
 
-def test_concurrent_create_409_exhausts_consistency_window(monkeypatch) -> None:
+def test_concurrent_create_409_exhausts_consistency_window_as_pending(monkeypatch) -> None:
     searches = 0
     sleeps: list[int] = []
 
@@ -389,11 +617,11 @@ def test_concurrent_create_409_exhausts_consistency_window(monkeypatch) -> None:
         client._token = "test-token"
         client._token_refresh_at = float("inf")
         try:
-            await client.register("Ada", "ada@example.com")
-        except IdentityConflict:
-            pass
+            await client.prepare_registration("Ada", "ada@example.com")
+        except IdentityPending as exc:
+            assert "not visible yet" in str(exc)
         else:
-            raise AssertionError("missing user after the SCIM consistency window must conflict")
+            raise AssertionError("missing user after the SCIM consistency window must remain retryable")
         await client.close()
 
     asyncio.run(run())
@@ -401,13 +629,21 @@ def test_concurrent_create_409_exhausts_consistency_window(monkeypatch) -> None:
     assert sleeps == [1, 1, 1, 1, 1]
 
 
-def test_pending_removal_failure_stays_pending_on_retry() -> None:
+def test_developer_demotion_failure_keeps_registration_pending() -> None:
     class RemovalFailureIdentity(IdentityClient):
         async def find_user(self, email: str):
-            return {"id": "managed", "userName": email, "externalId": "lab"}
+            return {
+                "id": "managed",
+                "ocid": "ocid1.user.oc1..managed",
+                "userName": email,
+                "externalId": "lab",
+            }
 
         async def _is_member(self, group_id: str, user_id: str) -> bool:
             return group_id == "developers"
+
+        async def add_member(self, group_id: str, user_id: str) -> None:
+            return None
 
         async def remove_member(self, group_id: str, user_id: str) -> None:
             raise RuntimeError("temporary removal failure")
@@ -423,11 +659,32 @@ def test_pending_removal_failure_stays_pending_on_retry() -> None:
             client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))),
         )
         try:
-            await client.register("Ada", "ada@example.com")
+            await client.prepare_registration("Ada", "ada@example.com")
         except IdentityPending:
             pass
         else:
-            raise AssertionError("pending removal failure must remain pending")
+            raise AssertionError("developer demotion failure must keep registration pending")
+        await client.close()
+
+    asyncio.run(run())
+
+
+def test_transient_identity_lookup_is_reported_as_pending() -> None:
+    async def run() -> None:
+        client = IdentityClient(
+            Settings(identity_domain_url="https://identity.example.test"),
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda _: httpx.Response(503))
+            ),
+        )
+        client._token = "test-token"
+        client._token_refresh_at = float("inf")
+        try:
+            await client.prepare_registration("Ada", "ada@example.com")
+        except IdentityPending as exc:
+            assert "reconciling" in str(exc)
+        else:
+            raise AssertionError("Identity 5xx must remain in the identity phase")
         await client.close()
 
     asyncio.run(run())

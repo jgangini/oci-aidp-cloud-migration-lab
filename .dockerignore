@@ -9,5 +9,12 @@ __pycache__
 .pytest_cache
 *.tfstate*
 .oci
+.tmp
+.sentrux
+graphify-out
+.env
+.env.*
 *.pem
 *.key
+*.crt
+*.p12

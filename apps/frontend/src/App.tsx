@@ -1,12 +1,22 @@
 import {
   FormEvent,
   KeyboardEvent,
+  RefObject,
   useEffect,
   useId,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+
+import {
+  ApiRequestError,
+  parseRetryAfter,
+  pollRegistration,
+  type RegistrationPhase,
+  type RegistrationPhaseValue,
+  type RegistrationResponse,
+} from "./registrationPoll";
 
 type ApiError = { detail?: string };
 type LabUser = {
@@ -18,6 +28,19 @@ type LabUser = {
   managed?: boolean;
 };
 
+const registrationPhaseLabels: Record<RegistrationPhase, string> = {
+  identity: "Creating your Identity account",
+  workspace: "Preparing your workspace",
+  schemas: "Aligning governed schemas",
+  content: "Loading your lab content",
+  permissions: "Granting your permissions",
+};
+function registrationPhaseLabel(phase?: RegistrationPhaseValue) {
+  return phase && Object.hasOwn(registrationPhaseLabels, phase)
+    ? registrationPhaseLabels[phase as RegistrationPhase]
+    : "Reconciling OCI access";
+}
+
 const focusableSelector = [
   "a[href]",
   "button:not([disabled])",
@@ -25,13 +48,56 @@ const focusableSelector = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
-class ApiRequestError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
+function useDialogFocus<Panel extends HTMLElement, Initial extends HTMLElement>(
+  open: boolean,
+  onClose: () => void,
+  panelRef: RefObject<Panel | null>,
+  initialFocusRef: RefObject<Initial | null>,
+) {
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open) return undefined;
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    initialFocusRef.current?.focus();
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        panelRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ?? [],
+      );
+      if (!focusable.length) {
+        event.preventDefault();
+        panelRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocusRef.current?.focus();
+    };
+  }, [initialFocusRef, open, panelRef]);
 }
 
 function ConfirmModal({
@@ -57,50 +123,7 @@ function ConfirmModal({
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    previousFocusRef.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    closeRef.current?.focus();
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        panelRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ??
-          [],
-      );
-      if (!focusable.length) {
-        event.preventDefault();
-        panelRef.current?.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = previousOverflow;
-      previousFocusRef.current?.focus();
-    };
-  }, [open, onClose]);
+  useDialogFocus(open, onClose, panelRef, closeRef);
 
   if (!open) return null;
   const icon =
@@ -197,6 +220,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiRequestError(
       body.detail || `Request failed (${response.status})`,
       response.status,
+      parseRetryAfter(response.headers.get("Retry-After")),
     );
   }
   return response.status === 204
@@ -454,11 +478,28 @@ function RegisterPage() {
   const [form, setForm] = useState({ name: "", email: "", industry: "banking" });
   const [codeSlots, setCodeSlots] = useState<string[]>(() => Array(8).fill(""));
   const codeInputs = useRef<Array<HTMLInputElement | null>>([]);
+  const registrationAbortRef = useRef<AbortController | null>(null);
+  const readyDialogRef = useRef<HTMLDivElement>(null);
+  const readyCloseRef = useRef<HTMLButtonElement>(null);
   const [state, setState] = useState<{
-    phase: "idle" | "processing" | "ready" | "error";
+    status: "idle" | "processing" | "ready" | "error";
+    phase?: RegistrationPhaseValue;
     message: string;
     aidpUrl?: string;
-  }>({ phase: "idle", message: "" });
+  }>({ status: "idle", message: "" });
+  const closeReady = () => setState({ status: "idle", message: "" });
+  useDialogFocus(
+    state.status === "ready",
+    closeReady,
+    readyDialogRef,
+    readyCloseRef,
+  );
+  useEffect(
+    () => () => {
+      registrationAbortRef.current?.abort();
+    },
+    [],
+  );
   const update = (name: keyof typeof form, value: string) =>
     setForm((current) => ({ ...current, [name]: value }));
   const registrationCode = `${codeSlots.slice(0, 4).join("")}-${codeSlots.slice(4).join("")}`;
@@ -505,49 +546,57 @@ function RegisterPage() {
     event.preventDefault();
     if (!/^[A-Z]{4}-[0-9]{4}$/.test(registrationCode)) {
       setState({
-        phase: "error",
+        status: "error",
         message: "Enter four letters followed by four numbers.",
       });
       focusCode(0);
       return;
     }
     const payload = { ...form, code: registrationCode };
+    registrationAbortRef.current?.abort();
+    const controller = new AbortController();
+    registrationAbortRef.current = controller;
     setState({
-      phase: "processing",
+      status: "processing",
+      phase: "identity",
       message: "Creating your Identity Domains account…",
     });
     try {
-      let result: { status: string; message?: string; aidp_url?: string };
-      for (let attempt = 0; ; attempt += 1) {
-        result = await api<{
-          status: string;
-          message?: string;
-          aidp_url?: string;
-        }>("/api/register", { method: "POST", body: JSON.stringify(payload) });
-        if (result.status !== "pending") break;
-        if (attempt === 11)
-          throw new Error(
-            "OCI is still reconciling your access. Please try again shortly.",
-          );
-        setState({
-          phase: "processing",
-          message: "OCI is configuring your developer access…",
-        });
-        await new Promise((resolve) => window.setTimeout(resolve, 2_500));
-      }
+      const result = await pollRegistration({
+        signal: controller.signal,
+        request: (signal) =>
+          api<RegistrationResponse>("/api/register", {
+            method: "POST",
+            body: JSON.stringify(payload),
+            signal,
+          }),
+        onPending: (pending) =>
+          setState({
+            status: "processing",
+            phase: pending.phase,
+            message:
+              pending.message ||
+              "OCI is reconciling your account. Keep this page open.",
+          }),
+      });
       setForm({ name: "", email: "", industry: "banking" });
       setCodeSlots(Array(8).fill(""));
       setState({
-        phase: "ready",
+        status: "ready",
         message: result.message || "Your lab account is ready.",
         aidpUrl: result.aidp_url,
       });
     } catch (error) {
+      if (controller.signal.aborted) return;
       setCodeSlots(Array(8).fill(""));
       setState({
-        phase: "error",
-        message: error instanceof Error ? error.message : "Registration failed",
+        status: "error",
+        message:
+          error instanceof Error ? error.message : "Registration failed",
       });
+    } finally {
+      if (registrationAbortRef.current === controller)
+        registrationAbortRef.current = null;
     }
   }
 
@@ -590,7 +639,7 @@ function RegisterPage() {
         <form
           className="card"
           onSubmit={submit}
-          aria-busy={state.phase === "processing"}
+          aria-busy={state.status === "processing"}
         >
           <div>
             <p className="eyebrow">Lab access</p>
@@ -674,19 +723,19 @@ function RegisterPage() {
               ))}
             </div>
           </fieldset>
-          {state.phase === "error" && (
+          {state.status === "error" && (
             <p className="notice error" role="alert">
               {state.message}
             </p>
           )}
-          <button disabled={state.phase === "processing"}>
-            {state.phase === "processing"
+          <button disabled={state.status === "processing"}>
+            {state.status === "processing"
               ? "Creating account…"
               : "Create account"}
           </button>
         </form>
       </section>
-      {state.phase === "processing" && (
+      {state.status === "processing" && (
         <section
           className="registration-overlay"
           role="status"
@@ -694,19 +743,22 @@ function RegisterPage() {
         >
           <div className="registration-result">
             <span className="progress-orbit" aria-hidden="true" />
-            <p className="eyebrow">Provisioning access</p>
+            <p className="eyebrow">{registrationPhaseLabel(state.phase)}</p>
             <h2>Preparing your lab</h2>
             <p>{state.message}</p>
           </div>
         </section>
       )}
-      {state.phase === "ready" && (
+      {state.status === "ready" && (
         <section className="registration-overlay">
           <div
             className="registration-result registration-result-ready"
+            ref={readyDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="registration-ready-title"
+            aria-describedby="registration-ready-message"
+            tabIndex={-1}
           >
             <div className="confirm-content">
               <div className="confirm-icon">
@@ -714,13 +766,14 @@ function RegisterPage() {
               </div>
               <p className="eyebrow">Access ready</p>
               <h2 id="registration-ready-title">Your lab account is ready</h2>
-              <p>{state.message}</p>
+              <p id="registration-ready-message">{state.message}</p>
             </div>
             <footer>
               <button
                 className="secondary"
+                ref={readyCloseRef}
                 type="button"
-                onClick={() => setState({ phase: "idle", message: "" })}
+                onClick={closeReady}
               >
                 Return to registration
               </button>
@@ -734,7 +787,7 @@ function RegisterPage() {
                   Open AI Data Platform
                 </a>
               ) : (
-                <button className="secondary" type="button" onClick={() => setState({ phase: "idle", message: "" })}>
+                <button className="secondary" type="button" onClick={closeReady}>
                   Close
                 </button>
               )}
@@ -814,6 +867,7 @@ function AdminUsers() {
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: "", email: "", industry: "banking" });
+  const createAbortRef = useRef<AbortController | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LabUser | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [logoutOpen, setLogoutOpen] = useState(false);
@@ -832,6 +886,7 @@ function AdminUsers() {
   }
   useEffect(() => {
     void loadUsers();
+    return () => createAbortRef.current?.abort();
   }, []);
   const visible = users.filter((user) =>
     `${user.name} ${user.email}`.toLowerCase().includes(query.toLowerCase()),
@@ -843,26 +898,37 @@ function AdminUsers() {
   async function createUser(event: FormEvent) {
     event.preventDefault();
     setCreating(true);
-    setDeleteError("");
+    setError("");
     setMessage("");
+    createAbortRef.current?.abort();
+    const controller = new AbortController();
+    createAbortRef.current = controller;
     try {
-      const result = await api<{ status: string; message?: string }>(
-        "/api/admin/users",
-        { method: "POST", body: JSON.stringify(draft) },
-      );
+      const result = await pollRegistration({
+        signal: controller.signal,
+        request: (signal) =>
+          api<RegistrationResponse>("/api/admin/users", {
+            method: "POST",
+            body: JSON.stringify(draft),
+            signal,
+          }),
+        onPending: (pending) =>
+          setMessage(
+            pending.message ||
+              `${registrationPhaseLabel(pending.phase)}. Reconciliation is still running.`,
+          ),
+      });
       setDraft({ name: "", email: "", industry: "banking" });
       setCreateOpen(false);
-      setMessage(
-        result.status === "pending"
-          ? "User is pending group reconciliation."
-          : "User created and added to the lab.",
-      );
+      setMessage(result.message || "User created and added to the lab.");
       await loadUsers();
     } catch (reason) {
+      if (controller.signal.aborted) return;
       setError(
         reason instanceof Error ? reason.message : "Unable to create user",
       );
     } finally {
+      if (createAbortRef.current === controller) createAbortRef.current = null;
       setCreating(false);
     }
   }

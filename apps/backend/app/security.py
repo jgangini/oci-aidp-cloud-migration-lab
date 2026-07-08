@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import threading
@@ -44,6 +45,10 @@ def verify_secret(value: str, encoded: str) -> bool:
 
 def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def opaque_rate_limit_key(key: bytes, value: str) -> str:
+    return hmac.new(key, value.strip().casefold().encode(), hashlib.sha256).hexdigest()
 
 
 def load_or_create_session_key(path_text: str) -> bytes:
@@ -93,13 +98,30 @@ class RateLimiter:
         self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
-    def allow(self, key: str, *, now: float | None = None) -> bool:
+    def _retry_after(self, hits: deque[float], current: float) -> int:
+        while hits and current - hits[0] >= self.window_seconds:
+            hits.popleft()
+        return (
+            max(1, math.ceil(self.window_seconds - (current - hits[0])))
+            if len(hits) >= self.limit
+            else 0
+        )
+
+    def retry_after(self, key: str, *, now: float | None = None) -> int:
         current = time.monotonic() if now is None else now
         with self._lock:
             hits = self._hits[key]
-            while hits and current - hits[0] >= self.window_seconds:
-                hits.popleft()
-            if len(hits) >= self.limit:
-                return False
+            return self._retry_after(hits, current)
+
+    def consume(self, key: str, *, now: float | None = None) -> int:
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            hits = self._hits[key]
+            retry_after = self._retry_after(hits, current)
+            if retry_after:
+                return retry_after
             hits.append(current)
-            return True
+            return 0
+
+    def allow(self, key: str, *, now: float | None = None) -> bool:
+        return self.consume(key, now=now) == 0

@@ -32,6 +32,15 @@ def test_deploy_studio_manifest_contract() -> None:
     assert manifest["preflight"]["output_inputs"] == ["home_region", "preferred_vm_shape", "availability_domain_index"]
     assert (root / manifest["preflight"]["entrypoint"]).is_file()
     assert "aidp_workbench_url" in manifest["outputs"]
+    assert {
+        "aidp_catalog_name",
+        "aidp_shared_compute_name",
+        "aidp_external_volume_count",
+        "aidp_provisioner_ready",
+        "provisioner_user_ocid",
+        "provisioner_group_ocid",
+        "home_region",
+    }.issubset(manifest["outputs"])
     assert "aidp_console_url" not in manifest["outputs"]
 
 
@@ -48,13 +57,32 @@ def test_hook_result_matches_runner_and_manifest_contract() -> None:
         "deployment_id": "deployment-test",
         "source": {"repository": "owner/repo", "ref": "v1.0.0", "commit_sha": "0" * 40},
     }
-    result = module.build_success_result(context, {"catalog_key": "catalog"}, ["ready"])
+    resources = {
+        "catalog_key": "catalog",
+        "catalog_name": "aidp_lab",
+        "shared_compute_name": "aidp_lab_shared_compute",
+        "external_volume_count": 0,
+        "provisioner_ready": True,
+    }
+    result = module.build_success_result(
+        context, resources, ["ready"], "https://aidp.example.test"
+    )
     assert set(result) == {"events", "artifacts", "outputs"}
-    assert result["outputs"] == {"aidp_workbench_url": ""}
+    assert result["outputs"] == {
+        "aidp_workbench_url": "https://aidp.example.test",
+        "aidp_catalog_name": "aidp_lab",
+        "aidp_shared_compute_name": "aidp_lab_shared_compute",
+        "aidp_provisioner_ready": True,
+        "aidp_external_volume_count": 0,
+    }
     assert {item["name"] for item in result["artifacts"]} == set(manifest["artifacts"])
     assert set(result["outputs"]).issubset(manifest["outputs"])
     artifact = json.loads(base64.b64decode(result["artifacts"][0]["content_b64"]))
-    assert artifact["resources"] == {"catalog_key": "catalog"}
+    assert artifact["schema_version"] == 2
+    assert artifact["resources"] == {
+        **resources,
+        "aidp_workbench_url": "https://aidp.example.test",
+    }
 
 
 def test_runtime_security_contracts() -> None:
@@ -69,11 +97,13 @@ def test_runtime_security_contracts() -> None:
     identity = (root / "terraform/h_oci_identity.tf").read_text(encoding="utf-8")
     aidp = (root / "terraform/i_oci_ai_data_platform.tf").read_text(encoding="utf-8")
     storage = (root / "terraform/f_oci_objectstorage_bucket.tf").read_text(encoding="utf-8")
+    backend_main = (root / "apps/backend/app/main.py").read_text(encoding="utf-8")
     assert "$proxy_add_x_forwarded_for" not in nginx
     assert "*.sh text eol=lf" in attributes
-    assert nginx.count("X-Forwarded-For $remote_addr") == 2
-    assert "limit_req_status 429" in nginx
-    assert 'return 429 \'{"detail":"Too many registration attempts"}\'' in nginx
+    assert nginx.count("X-Forwarded-For $remote_addr") == 1
+    assert "limit_req" not in nginx
+    assert "opaque_rate_limit_key" in backend_main
+    assert 'headers={"Retry-After": str(' in backend_main
     assert 'chmod 0600 "$TLS_DIR/tls.key" 2>/dev/null || true' in entrypoint
     assert "firewall-offline-cmd --zone=public --add-service=http" in cloud_init
     assert "firewall-offline-cmd --zone=public --add-service=https" in cloud_init
@@ -105,8 +135,16 @@ def test_runtime_security_contracts() -> None:
     assert 'desired_state = "ENABLED"' in compute
     assert 'variable "vm_ocpus"' not in variables
     assert 'variable "vm_memory_gbs"' not in variables
-    assert identity.count("oci.home") == 7
-    assert compute.count("oci.home") == 4
+    assert 'resource "oci_identity_domains_user" "provisioner"' in identity
+    assert 'user_type     = "Service"' in identity
+    assert "can_use_api_keys                 = true" in identity
+    assert "can_use_console                  = false" in identity
+    assert "can_use_console_password         = false" in identity
+    assert 'resource "oci_identity_domains_group" "provisioner"' in identity
+    assert "value = oci_identity_domains_user.provisioner.id" in identity
+    assert identity.count('resource "oci_identity_domains_grant"') == 1
+    assert 'app_role_filter = "displayName eq \\"User Administrator\\""' in identity
+    assert "API Key Administrator" not in identity
     assert aidp.count("oci.home") == 1
     assert 'resource "time_sleep" "kms_endpoint"' in identity
     assert 'create_duration = "420s"' in identity
@@ -126,7 +164,16 @@ def test_runtime_security_contracts() -> None:
     assert 'regex("^[0-9a-f]{40}$"' in source_sha_block
     assert "force_destroy" in storage
     assert "prevent_destroy" not in storage
-    assert "manage datalake in compartment id ${local.target_compartment}" in compute
+    assert "manage datalake" not in compute
+    assert "manage ai-data-platforms" not in compute
+    assert 'resource "oci_identity_policy" "vm_run_command"' in compute
+    assert "manage instance-agent-command-family" in compute
+    assert "use instance-agent-command-execution-family" in compute
+    assert 'chmod 0600 "$OCI_DIR/key.pem" "$OCI_DIR/config"' in cloud_init
+    assert '"$OCI_DIR:/etc/aidp-lab/oci:ro,Z"' in cloud_init
+    assert "ocarun ALL=(root) NOPASSWD: /usr/local/sbin/aidp-lab-public-key" in cloud_init
+    assert "cat /opt/aidp-lab/.oci/key_public.pem" in cloud_init
+    assert "cat /opt/aidp-lab/.oci/key.pem" not in cloud_init
     assert "AIDP_WORKBENCH_URL=${aidp_workbench_url}" in cloud_init
     assert "AIDP_CONSOLE_URL" not in cloud_init
 

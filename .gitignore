@@ -3,6 +3,7 @@
 *.tfstate.*
 *.tfplan
 .oci/
+.tmp/
 *.pem
 *.key
 *.crt

@@ -60,6 +60,10 @@ resource "oci_core_instance" "lab" {
       oauth_secret_ocid        = oci_vault_secret.oauth_client.id
       developer_group_id       = oci_identity_domains_group.developers.id
       pending_group_id         = oci_identity_domains_group.pending.id
+      provisioner_user_ocid    = oci_identity_domains_user.provisioner.ocid
+      tenancy_ocid             = var.tenancy_ocid
+      objectstorage_namespace  = var.objectstorage_namespace
+      bucket_name              = oci_objectstorage_bucket.data.name
       aidp_workbench_url       = local.aidp_workbench_url
       aidp_platform_id         = oci_ai_data_platform_ai_data_platform.lab.id
       aidp_workspace_name      = oci_ai_data_platform_ai_data_platform.lab.default_workspace_name
@@ -108,19 +112,10 @@ resource "oci_identity_policy" "vm_run_command" {
   provider       = oci.home
   compartment_id = var.tenancy_ocid
   name           = "${local.name_prefix}-vm-run-command"
-  description    = "Allow an instance principal to execute commands only on itself"
+  description    = "Allow the deployment operator to run commands only on the lab VM"
   statements = [
-    "Allow any-user to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id"
-  ]
-}
-
-resource "oci_identity_policy" "vm_aidp_runtime" {
-  provider       = oci.home
-  compartment_id = var.tenancy_ocid
-  name           = "${local.name_prefix}-vm-aidp-runtime"
-  description    = "Allow the lab VM to provision and clean shared AIDP tutorial material"
-  statements = [
-    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to manage datalake in compartment id ${local.target_compartment}"
+    "Allow group Administrators to manage instance-agent-command-family in compartment id ${local.target_compartment} where target.instance.id = '${oci_core_instance.lab.id}'",
+    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id"
   ]
 }
 

@@ -1,3 +1,5 @@
+# Stable nine-statement AIDP Advanced policy. Optional VNIC, subnet, NSG, and
+# Object Storage service deletion grants are intentionally not part of this policy.
 resource "oci_identity_policy" "aidp_service" {
   provider       = oci.home
   compartment_id = var.tenancy_ocid

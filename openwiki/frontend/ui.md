@@ -8,10 +8,12 @@ The frontend is a React/Vite single-page app in [`apps/frontend/src/App.tsx`](..
 The public-facing screen collects:
 - a person name
 - an email address
-- a password
+- one of four industries
 - an eight-character registration code in the format `AAAA-0000`
 
-The UI intentionally uses segmented registration-code inputs and a generated-password helper so users do not need to type the code in one field or invent weak passwords. The code field pattern is enforced both in the client and the backend.
+The UI intentionally uses segmented registration-code inputs. The user sets a password through the standard Identity Domains activation email; no participant password is collected or stored by the lab UI. The code pattern is enforced in both client and backend.
+
+Registration is idempotent and phase-aware. The UI repeats the same POST using 2/4/8/16/30-second backoff, stops after a real ten-minute deadline, and aborts when unmounted. It displays the backend phase and message, preserves a backend `409` detail unchanged, and exposes the AIDP link only after `status=active`.
 
 ### Administrator workspace
 After login, the admin area provides:
@@ -25,7 +27,7 @@ After login, the admin area provides:
 The browser tests in [`apps/frontend/tests/security.test.mjs`](../apps/frontend/tests/security.test.mjs) are security-oriented source checks that prevent accidental regressions such as storing secrets in browser storage or changing password input semantics.
 
 ## UI implementation details
-- `App.tsx` is a large but cohesive file that handles routing, modal focus control, password generation, and all API calls.
+- `App.tsx` is a large but cohesive file that handles routing, modal focus control, phased registration, and all API calls.
 - `createPortal` is used for confirmation dialogs so the modal overlays the entire app.
 - The app uses `credentials: "include"` on API calls because the backend session is cookie-based.
 - The admin table distinguishes active, pending, inactive, and managed users so operators can see which identities belong to the lab.
@@ -34,7 +36,7 @@ The browser tests in [`apps/frontend/tests/security.test.mjs`](../apps/frontend/
 ## Accessibility and security notes
 - Dialogs trap focus and restore previous focus on close.
 - Buttons that act as controls are explicitly `type="button"` so they do not submit forms accidentally.
-- Passwords are generated with `crypto.getRandomValues` rather than a non-cryptographic source.
+- Participant passwords never cross the frontend; administrator passwords remain password inputs.
 - The app is designed not to persist secrets in `localStorage` or `sessionStorage`.
 - The `__Host-` admin session cookie is assumed to be handled entirely by the backend; the UI only checks session state via API calls.
 

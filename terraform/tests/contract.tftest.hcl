@@ -109,6 +109,14 @@ run "resolved_compartment_contract" {
   assert {
     condition = anytrue([
       for statement in oci_identity_policy.developer_console.statements :
+      strcontains(statement, "read buckets") && strcontains(statement, "target.bucket.name = 'aidp-data-test1234'")
+    ])
+    error_message = "Developer bucket metadata access must be limited to the single lab bucket."
+  }
+
+  assert {
+    condition = anytrue([
+      for statement in oci_identity_policy.developer_console.statements :
       strcontains(statement, "Allow group Administrators to manage ai-data-platforms in compartment id ocid1.compartment.oc1..test")
     ])
     error_message = "The deployment operator needs scoped AIDP administration for catalog reconciliation."
@@ -138,15 +146,22 @@ run "resolved_compartment_contract" {
       for statement in oci_identity_policy.aidp_service.statements :
       !strcontains(statement, "manage vnics") &&
       !strcontains(statement, "use subnets") &&
-      !strcontains(statement, "use network-security-groups")
+      !strcontains(statement, "use network-security-groups") &&
+      !strcontains(statement, "Allow service objectstorage-") &&
+      !strcontains(statement, "to manage object-family")
     ])
-    error_message = "Optional private-network permissions must not be part of the required AIDP policy."
+    error_message = "Optional private-network and Object Storage deletion permissions must not be part of the required AIDP policy."
+  }
+
+  assert {
+    condition     = length(oci_identity_policy.aidp_service.statements) == 9
+    error_message = "The stable nine-statement required AIDP Advanced policy must remain complete."
   }
 
   assert {
     condition = anytrue([
       for statement in oci_identity_policy.vm_run_command.statements :
-      strcontains(statement, "Allow any-user to use instance-agent-command-execution-family") &&
+      strcontains(statement, "Allow dynamic-group aidp-lab-test1234-vm to use instance-agent-command-execution-family") &&
       strcontains(statement, "use instance-agent-command-execution-family") &&
       strcontains(statement, "compartment id ocid1.compartment.oc1..test") &&
       strcontains(statement, "request.instance.id=target.instance.id")
@@ -155,16 +170,52 @@ run "resolved_compartment_contract" {
   }
 
   assert {
+    condition     = length(oci_identity_policy.vm_run_command.statements) == 2
+    error_message = "The deployment operator needs scoped command submission access to retrieve the public key."
+  }
+
+  assert {
     condition     = oci_core_instance.lab.shape == "VM.Standard.E5.Flex"
     error_message = "The APPLY must use the explicitly requested shape without pretending to fall back."
   }
 
   assert {
-    condition = anytrue([
-      for statement in oci_identity_policy.vm_aidp_runtime.statements :
-      strcontains(statement, "manage datalake in compartment id ocid1.compartment.oc1..test")
-    ])
-    error_message = "The VM must manage AIDP tutorial material only in the lab compartment."
+    condition = (
+      oci_identity_domains_user.provisioner.user_type == "Service" &&
+      oci_identity_domains_user.provisioner.active &&
+      length(oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user) == 1 &&
+      oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_api_keys &&
+      !oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_console &&
+      !oci_identity_domains_user.provisioner.urnietfparamsscimschemasoracleidcsextensioncapabilities_user[0].can_use_console_password
+    )
+    error_message = "The technical provisioner must be API-only and non-interactive."
+  }
+
+  assert {
+    condition = (
+      oci_identity_domains_group.provisioner.display_name == "aidp-lab-provisioner-test1234" &&
+      length(oci_identity_domains_group.provisioner.members) == 1 &&
+      alltrue([
+        for member in oci_identity_domains_group.provisioner.members :
+        member.type == "User"
+      ])
+    )
+    error_message = "The dedicated provisioner group must contain exactly the technical user."
+  }
+
+  assert {
+    condition = (
+      length(oci_identity_policy.provisioner_runtime.statements) == 3 &&
+      anytrue([
+        for statement in oci_identity_policy.provisioner_runtime.statements :
+        strcontains(statement, "use ai-data-platforms")
+      ]) &&
+      alltrue([
+        for statement in oci_identity_policy.provisioner_runtime.statements :
+        !strcontains(statement, "objects") || strcontains(statement, "target.bucket.name = 'aidp-data-test1234'")
+      ])
+    )
+    error_message = "Provisioner IAM must be limited to AIDP use and the exact lab bucket."
   }
 }
 

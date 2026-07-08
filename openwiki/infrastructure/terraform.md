@@ -5,7 +5,7 @@ The Terraform package in [`terraform/`](../terraform/) is the deployment backbon
 ## What it provisions
 Based on the root README and the Terraform file structure, the package manages:
 - the OCI network and compute instance used as the registration VM
-- the private Object Storage bucket that stores lab data in the four medallion prefixes
+- the private `aidp-data-<suffix>` bucket used by the Oracle-managed Object Storage data plane
 - tenancy-level Identity Domains resources such as groups and the registration OAuth application
 - the Oracle AI Data Platform resource and its associated workspace/catalog setup
 - outputs needed by Deploy Studio and the post-apply workflow
@@ -34,11 +34,17 @@ The README says Deploy Studio preflight discovers the tenancy home region and ch
 - can add missing resources
 - must not delete or replace mismatched live resources
 - authorizes catalog reconciliation and waits for asynchronous resources
+- aligns the workspace, catalog, shared compute, `/Workspace/lab-users` root, and pending/developer/provisioner RBAC
+
+Participant provisioning uses external tables over OCI URIs in the one lab bucket. It does not create external AIDP volumes or an explicit OSCS/OpenSearch resource. Developer and provisioner IAM may `use ai-data-platforms`, read bucket metadata, and manage objects only in the exact `aidp-data-<suffix>` bucket; AIDP-internal permissions remain the primary authorization layer.
+
+The bucket intentionally omits `kms_key_id`, so OCI encrypts it with an Oracle-managed key. The repository's Vault/KMS resources exist only for the OAuth client secret.
 
 ### Safety contracts
 The top-level README also documents two important constraints:
 - the data bucket is intentionally not auto-deleted when non-empty
 - tenancy-scoped Identity Domains resources use a provider alias pinned to the home region
+- Deploy Studio operator credentials are not copied to the VM; runtime provisioning uses a separate least-privilege API key and does not fall back to an instance principal
 
 ## What to watch when editing
 - Keep `terraform/deploy-studio.json` and the Terraform schema compatible with Deploy Studio v1.

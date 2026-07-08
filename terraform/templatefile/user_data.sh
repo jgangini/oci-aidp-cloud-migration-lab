@@ -10,6 +10,7 @@ SOURCE_COMMIT_SHA="${source_commit_sha}"
 SOURCE_DIR="/opt/aidp-lab/source"
 STATE_DIR="/opt/aidp-lab/state"
 TLS_DIR="/opt/aidp-lab/tls"
+OCI_DIR="/opt/aidp-lab/.oci"
 LOCAL_IMAGE="aidp-lab:${source_commit_sha}"
 
 retry() {
@@ -41,7 +42,43 @@ use_reachable_base_images() {
 }
 
 dnf -y makecache
-dnf -y install dnf-plugins-core firewalld curl git openssl python3
+dnf -y install dnf-plugins-core firewalld curl git openssl python3 sudo
+
+install -d -m 0700 "$TLS_DIR" "$STATE_DIR" "$OCI_DIR"
+umask 077
+if [ ! -s "$OCI_DIR/key.pem" ]; then
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$OCI_DIR/key.pem"
+fi
+openssl pkey -in "$OCI_DIR/key.pem" -pubout -out "$OCI_DIR/key_public.pem"
+FINGERPRINT=$(openssl rsa -pubout -outform DER -in "$OCI_DIR/key.pem" 2>/dev/null | openssl md5 -c | awk '{print $2}')
+test -n "$FINGERPRINT"
+printf '%s\n' "$FINGERPRINT" >"$OCI_DIR/fingerprint"
+cat >"$OCI_DIR/config" <<EOF
+[DEFAULT]
+user=${provisioner_user_ocid}
+fingerprint=$FINGERPRINT
+tenancy=${tenancy_ocid}
+region=${aidp_region}
+key_file=/etc/aidp-lab/oci/key.pem
+EOF
+chmod 0600 "$OCI_DIR/key.pem" "$OCI_DIR/config"
+chmod 0644 "$OCI_DIR/key_public.pem" "$OCI_DIR/fingerprint"
+
+cat >/usr/local/sbin/aidp-lab-public-key <<'EOF'
+#!/bin/bash
+set -euo pipefail
+cat /opt/aidp-lab/.oci/key_public.pem
+printf 'FINGERPRINT='
+cat /opt/aidp-lab/.oci/fingerprint
+EOF
+chown root:root /usr/local/sbin/aidp-lab-public-key
+chmod 0755 /usr/local/sbin/aidp-lab-public-key
+cat >/etc/sudoers.d/101-aidp-lab-public-key <<'EOF'
+ocarun ALL=(root) NOPASSWD: /usr/local/sbin/aidp-lab-public-key
+EOF
+chmod 0440 /etc/sudoers.d/101-aidp-lab-public-key
+visudo -cf /etc/sudoers.d/101-aidp-lab-public-key
+
 systemctl stop firewalld >/dev/null 2>&1 || true
 firewall-offline-cmd --zone=public --add-service=http
 firewall-offline-cmd --zone=public --add-service=https
@@ -53,7 +90,6 @@ dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker
 systemctl enable --now docker
 docker info >/dev/null
 
-install -d -m 0700 "$TLS_DIR" "$STATE_DIR"
 PUBLIC_IP=""
 for attempt in $(seq 1 12); do
   PUBLIC_IP=$(oci-public-ip -g 2>/dev/null \
@@ -114,6 +150,9 @@ AIDP_WORKBENCH_URL=${aidp_workbench_url}
 AIDP_PLATFORM_ID=${aidp_platform_id}
 AIDP_WORKSPACE_NAME=${aidp_workspace_name}
 AIDP_REGION=${aidp_region}
+OCI_CONFIG_FILE=/etc/aidp-lab/oci/config
+OBJECTSTORAGE_NAMESPACE=${objectstorage_namespace}
+BUCKET_NAME=${bucket_name}
 AIDP_SETTINGS_FILE=/var/lib/aidp-lab/settings.json
 LAB_MARKER=${lab_marker}
 SESSION_SECRET_FILE=/var/lib/aidp-lab/session.key
@@ -130,11 +169,13 @@ docker run -d \
   -p 80:80 \
   -p 443:443 \
   -v "$TLS_DIR:/etc/aidp-lab/tls:ro,Z" \
+  -v "$OCI_DIR:/etc/aidp-lab/oci:ro,Z" \
   -v "$STATE_DIR:/var/lib/aidp-lab:Z" \
   "$LOCAL_IMAGE"
 
 for attempt in $(seq 1 120); do
-  if curl --fail --silent --insecure https://127.0.0.1/api/health >/dev/null; then
+  HEALTH_STATUS=$(curl --silent --insecure --output /dev/null --write-out '%%{http_code}' https://127.0.0.1/api/health) || HEALTH_STATUS=""
+  if [ "$HEALTH_STATUS" = "200" ] || [ "$HEALTH_STATUS" = "503" ]; then
     break
   fi
   if [ "$attempt" -eq 120 ]; then

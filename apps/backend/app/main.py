@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable, Literal
@@ -8,16 +10,30 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .aidp import AidpClient, AidpProvisionError, AidpProvisionPending, LocalAidpClient
+from .aidp import (
+    AidpClient,
+    AidpProvisionConflict,
+    AidpProvisionError,
+    AidpProvisionPending,
+    LocalAidpClient,
+)
 from .config import Settings, SettingsStore
 from .identity import IdentityClient, IdentityConflict, IdentityPending, IdentityRejected, LocalIdentityClient
-from .security import RateLimiter, issue_session, load_or_create_session_key, verify_secret, verify_session
+from .security import (
+    RateLimiter,
+    issue_session,
+    load_or_create_session_key,
+    opaque_rate_limit_key,
+    verify_secret,
+    verify_session,
+)
 
 
 COOKIE_NAME = "__Host-aidp_lab_admin"
 LOCAL_COOKIE_NAME = "aidp_lab_admin"
 CODE_PATTERN = re.compile(r"^[A-Z]{4}-[0-9]{4}$")
 EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
+logger = logging.getLogger(__name__)
 
 
 Industry = Literal["banking", "telecommunications", "retail", "healthcare"]
@@ -83,11 +99,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if client is not None:
                 await client.close()
 
-    app = FastAPI(title="OCI AIDP Lab", version="1.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app = FastAPI(title="OCI AIDP Lab", version="2.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.settings = settings
     app.state.settings_store = SettingsStore(settings)
     app.state.session_key = load_or_create_session_key(settings.session_secret_file)
     app.state.register_limiter = RateLimiter(5, 60)
+    app.state.invalid_code_limiter = RateLimiter(5, 60)
     app.state.login_limiter = RateLimiter(5, 60)
     app.state.identity_client = None
     app.state.aidp_client = None
@@ -140,30 +157,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def provision_user(name: str, email: str, industry: Industry) -> JSONResponse:
         try:
-            result = await app.state.identity_factory().register(name, email)
+            identity = app.state.identity_factory()
+            result = await identity.prepare_registration(name, email)
         except IdentityConflict as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         except IdentityRejected as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+            logger.warning("Identity Domains rejected a lab registration: %s", exc)
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Identity Domains rejected this registration request",
+            ) from exc
         except IdentityPending as exc:
-            return JSONResponse(status_code=202, content={"status": "pending", "message": str(exc)})
+            return JSONResponse(
+                status_code=202,
+                content={"status": "pending", "phase": "identity", "message": str(exc)},
+            )
         try:
-            material = await app.state.aidp_factory().provision_user(email, industry)
+            material = await app.state.aidp_factory().provision_user(result.user_ocid, email, industry)
         except AidpProvisionPending as exc:
-            return JSONResponse(status_code=202, content={"status": "pending", "message": str(exc)})
+            return JSONResponse(
+                status_code=202,
+                content={"status": "pending", "phase": exc.phase, "message": str(exc)},
+            )
+        except AidpProvisionConflict as exc:
+            if result.was_developer:
+                try:
+                    await identity.activate_registration(result.user_id)
+                except IdentityPending as restore_exc:
+                    raise HTTPException(
+                        status.HTTP_503_SERVICE_UNAVAILABLE,
+                        "The industry is immutable and prior developer access is still being restored",
+                    ) from restore_exc
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         except AidpProvisionError as exc:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        try:
+            await identity.activate_registration(result.user_id)
+        except IdentityPending as exc:
+            return JSONResponse(
+                status_code=202,
+                content={"status": "pending", "phase": "permissions", "message": str(exc)},
+            )
         content: dict[str, Any] = {
             "status": "active",
             "email": result.email,
+            "participant_key": material.participant_key,
             "industry": industry,
             "workspace_path": material.workspace_path,
             "job_name": material.job_name,
+            "aidp_url": app.state.settings_store.get_workbench_url(),
         }
-        aidp_url = app.state.settings_store.get_workbench_url()
-        if aidp_url:
-            content["aidp_url"] = aidp_url
-        else:
+        if not content["aidp_url"]:
             content["message"] = "Your account is ready. Ask the lab administrator to configure the Workbench URL."
         return JSONResponse(status_code=201 if result.status == "created" else 200, content=content)
 
@@ -172,9 +216,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.identity_ready() or not settings.aidp_ready():
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Lab services are unavailable")
         try:
-            await app.state.identity_factory().healthcheck()
+            await asyncio.gather(
+                app.state.identity_factory().healthcheck(),
+                app.state.aidp_factory().healthcheck(),
+            )
         except Exception as exc:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Identity service is unavailable") from exc
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Lab control services are unavailable") from exc
         return {"status": "ok"}
 
     @app.get("/api/public/config")
@@ -188,10 +235,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/register")
     async def register(payload: RegistrationRequest, request: Request) -> JSONResponse:
         require_registration_ready()
-        if not app.state.register_limiter.allow(client_ip(request)):
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many registration attempts")
+        source_ip = client_ip(request)
+        invalid_retry_after = app.state.invalid_code_limiter.retry_after(source_ip)
+        if invalid_retry_after:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "Too many invalid registration codes",
+                headers={"Retry-After": str(invalid_retry_after)},
+            )
         if not verify_secret(payload.code, settings.registration_code_hash):
+            invalid_retry_after = app.state.invalid_code_limiter.consume(source_ip)
+            if invalid_retry_after:
+                raise HTTPException(
+                    status.HTTP_429_TOO_MANY_REQUESTS,
+                    "Too many invalid registration codes",
+                    headers={"Retry-After": str(invalid_retry_after)},
+                )
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid registration code")
+        participant_key = opaque_rate_limit_key(app.state.session_key, payload.email)
+        retry_after = app.state.register_limiter.consume(participant_key)
+        if retry_after:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "Registration reconciliation is temporarily rate limited",
+                headers={"Retry-After": str(retry_after)},
+            )
         return await provision_user(payload.name, payload.email, payload.industry)
 
     @app.post("/api/admin/login", status_code=204)
@@ -258,7 +326,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user = await client.get_lab_user(user_id)
             if user is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Lab user not found")
-            await app.state.aidp_factory().cleanup_user(user["email"])
+            await app.state.aidp_factory().cleanup_user(user["ocid"])
             deleted = await client.delete_lab_user(user_id)
         except IdentityConflict as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc

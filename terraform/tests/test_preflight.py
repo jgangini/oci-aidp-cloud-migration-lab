@@ -9,7 +9,15 @@ from typing import Any
 import pytest
 
 
-MODULE_PATH = Path(__file__).parents[1] / "k_preflight.py"
+TERRAFORM_ROOT = Path(__file__).parents[1]
+RELEASE_GATE_PATH = TERRAFORM_ROOT / "release_gate.py"
+RELEASE_GATE_SPEC = importlib.util.spec_from_file_location("release_gate", RELEASE_GATE_PATH)
+assert RELEASE_GATE_SPEC and RELEASE_GATE_SPEC.loader
+release_gate = importlib.util.module_from_spec(RELEASE_GATE_SPEC)
+sys.modules[RELEASE_GATE_SPEC.name] = release_gate
+RELEASE_GATE_SPEC.loader.exec_module(release_gate)
+
+MODULE_PATH = TERRAFORM_ROOT / "k_preflight.py"
 SPEC = importlib.util.spec_from_file_location("aidp_deploy_preflight", MODULE_PATH)
 assert SPEC and SPEC.loader
 preflight = importlib.util.module_from_spec(SPEC)
@@ -33,7 +41,10 @@ class Identity:
         return SimpleNamespace(data=[SimpleNamespace(name="AD-1")])
 
     def list_domains(self, **_kwargs: Any) -> Any:
-        return SimpleNamespace(data=[SimpleNamespace(url="https://identity.example")])
+        return SimpleNamespace(data=[SimpleNamespace(url="https://identity.example", lifecycle_state="ACTIVE")])
+
+    def list_compartments(self, **_kwargs: Any) -> Any:
+        return SimpleNamespace(data=[], headers={})
 
 
 class IdentityDomains:
@@ -65,17 +76,45 @@ class Compute:
         )
 
 
-def _select(statuses: dict[str, tuple[str, str]]) -> tuple[dict[str, Any], Compute]:
+class Limits:
+    def __init__(self, available: float = 2) -> None:
+        self.available = available
+
+    def get_resource_availability(self, service_name: str, limit_name: str, _compartment_id: str) -> Any:
+        assert (service_name, limit_name) == ("kms", "virtual-vault-count")
+        return SimpleNamespace(data=SimpleNamespace(available=self.available))
+
+
+class Aidp:
+    def __init__(self, work_requests: list[Any] | None = None) -> None:
+        self.work_requests = work_requests or []
+
+    def list_work_requests(self, **_kwargs: Any) -> Any:
+        return SimpleNamespace(data=SimpleNamespace(items=self.work_requests), headers={})
+
+
+def _select(
+    statuses: dict[str, tuple[str, str]],
+    *,
+    identity: Identity | None = None,
+    limits: Limits | None = None,
+    aidp: Aidp | None = None,
+) -> tuple[dict[str, Any], Compute]:
     compute = Compute(statuses)
+    identity = identity or Identity()
+    limits = limits or Limits()
+    aidp = aidp or Aidp()
     result = preflight.select_inputs(
         {
             "region": "us-chicago-1",
             "inputs": {},
         },
         {"tenancy": "ocid1.tenancy.oc1..test", "region": "us-chicago-1"},
-        identity_factory=lambda _config: Identity(),
+        identity_factory=lambda _config: identity,
         compute_factory=lambda _config: compute,
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
+        limits_factory=lambda _config: limits,
+        aidp_factory=lambda _config: aidp,
     )
     return result, compute
 
@@ -96,6 +135,51 @@ def test_preflight_selects_e5_and_discovers_home_region() -> None:
     assert any(event["name"] == "Identity Domain signing certificate access" for event in result["events"])
 
 
+def test_preflight_rejects_existing_lab4_compartment_across_pages() -> None:
+    class PagedIdentity(Identity):
+        def list_compartments(self, **kwargs: Any) -> Any:
+            if kwargs.get("page") == "next":
+                return SimpleNamespace(
+                    data=[SimpleNamespace(id="ocid1.compartment.oc1..active", lifecycle_state="ACTIVE")],
+                    headers={},
+                )
+            return SimpleNamespace(
+                data=[SimpleNamespace(id="ocid1.compartment.oc1..deleted", lifecycle_state="DELETED")],
+                headers={"opc-next-page": "next"},
+            )
+
+    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
+    with pytest.raises(RuntimeError, match="is not available"):
+        _select({preflight.E5_SHAPE: (available, "1")}, identity=PagedIdentity())
+
+
+def test_preflight_rejects_active_work_request_from_deleted_lab4() -> None:
+    class DeletedIdentity(Identity):
+        def list_compartments(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                data=[SimpleNamespace(id="ocid1.compartment.oc1..deleted", lifecycle_state="DELETED")],
+                headers={},
+            )
+
+    work_request = SimpleNamespace(
+        compartment_id="ocid1.compartment.oc1..deleted",
+        status="IN_PROGRESS",
+    )
+    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
+    with pytest.raises(RuntimeError, match="work request is still active"):
+        _select(
+            {preflight.E5_SHAPE: (available, "1")},
+            identity=DeletedIdentity(),
+            aidp=Aidp([work_request]),
+        )
+
+
+def test_preflight_requires_two_available_virtual_vault_slots() -> None:
+    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
+    with pytest.raises(RuntimeError, match="at least two"):
+        _select({preflight.E5_SHAPE: (available, "1")}, limits=Limits(1))
+
+
 def test_preflight_requires_public_identity_domain_signing_certificate() -> None:
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
     with pytest.raises(RuntimeError, match="Access Signing Certificate"):
@@ -105,6 +189,8 @@ def test_preflight_requires_public_identity_domain_signing_certificate() -> None
             identity_factory=lambda _config: Identity(),
             compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
             identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(False),
+            limits_factory=lambda _config: Limits(),
+            aidp_factory=lambda _config: Aidp(),
         )
 
 
@@ -123,6 +209,8 @@ def test_preflight_finds_default_domain_by_stable_type() -> None:
         identity_factory=lambda _config: RecordingIdentity(),
         compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
+        limits_factory=lambda _config: Limits(),
+        aidp_factory=lambda _config: Aidp(),
     )
 
     assert filters["type"] == "DEFAULT"
@@ -193,6 +281,8 @@ def test_preflight_checks_all_availability_domains_for_standard_shape() -> None:
         identity_factory=lambda _config: MultiAdIdentity(),
         compute_factory=lambda _config: MultiAdCompute(),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
+        limits_factory=lambda _config: Limits(),
+        aidp_factory=lambda _config: Aidp(),
     )
     assert result["inputs"]["availability_domain_index"] == 1
 
@@ -233,6 +323,8 @@ def test_preflight_accepts_any_available_fault_domain() -> None:
         identity_factory=lambda _config: Identity(),
         compute_factory=lambda _config: FaultDomainCompute(),
         identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
+        limits_factory=lambda _config: Limits(),
+        aidp_factory=lambda _config: Aidp(),
     )
     assert result["inputs"]["preferred_vm_shape"] == preflight.E5_SHAPE
 

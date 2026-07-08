@@ -22,6 +22,9 @@ class Settings:
     aidp_platform_id: str = ""
     aidp_workspace_name: str = ""
     aidp_region: str = ""
+    oci_config_file: str = "/etc/aidp-lab/oci/config"
+    objectstorage_namespace: str = ""
+    bucket_name: str = ""
     aidp_settings_file: str = "/var/lib/aidp-lab/settings.json"
     lab_marker: str = "aidp-lab"
     session_secret_file: str = "/var/lib/aidp-lab/session.key"
@@ -44,6 +47,9 @@ class Settings:
             aidp_platform_id=os.getenv("AIDP_PLATFORM_ID", ""),
             aidp_workspace_name=os.getenv("AIDP_WORKSPACE_NAME", ""),
             aidp_region=os.getenv("AIDP_REGION", ""),
+            oci_config_file=os.getenv("OCI_CONFIG_FILE", "/etc/aidp-lab/oci/config"),
+            objectstorage_namespace=os.getenv("OBJECTSTORAGE_NAMESPACE", ""),
+            bucket_name=os.getenv("BUCKET_NAME", ""),
             aidp_settings_file=os.getenv("AIDP_SETTINGS_FILE", "/var/lib/aidp-lab/settings.json"),
             lab_marker=os.getenv("LAB_MARKER", "aidp-lab"),
             session_secret_file=os.getenv("SESSION_SECRET_FILE", "/var/lib/aidp-lab/session.key"),
@@ -66,7 +72,14 @@ class Settings:
 
     def aidp_ready(self) -> bool:
         return self.local_development_mode or all(
-            (self.aidp_platform_id, self.aidp_workspace_name, self.aidp_region)
+            (
+                self.aidp_platform_id,
+                self.aidp_workspace_name,
+                self.aidp_region,
+                self.oci_config_file,
+                self.objectstorage_namespace,
+                self.bucket_name,
+            )
         )
 
 

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+const pollingSource = await readFile(new URL("../src/registrationPoll.ts", import.meta.url), "utf8");
 const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
 test("secrets are never persisted in browser storage", () => {
@@ -64,11 +65,20 @@ test("administrator UI manages lab users through protected API routes", () => {
   assert.match(source, /className="confirm-error"/);
 });
 
-test("registration waits for OCI reconciliation and only then exposes the AIDP link", () => {
-  assert.match(source, /result\.status !== "pending"/);
+test("registration retries OCI reconciliation with phases, backoff, and a real deadline", () => {
+  assert.match(pollingSource, /"identity"[\s\S]*"workspace"[\s\S]*"schemas"[\s\S]*"content"[\s\S]*"permissions"/);
+  assert.match(pollingSource, /2_000, 4_000, 8_000, 16_000, 30_000/);
+  assert.match(pollingSource, /10 \* 60 \* 1_000/);
+  assert.match(pollingSource, /error\.status !== 429/);
+  assert.match(source, /pollRegistration\(\{/);
+  assert.match(source, /registrationAbortRef\.current\?\.abort\(\)/);
+  assert.match(source, /phase: pending\.phase/);
   assert.match(source, /<p>\{state\.message\}<\/p>/);
   assert.match(source, /Open AI Data Platform/);
   assert.match(source, /function AccessReadyIcon/);
   assert.match(source, /aria-labelledby="registration-ready-title"/);
+  assert.match(source, /useDialogFocus\(/);
+  assert.match(source, /ref=\{readyCloseRef\}/);
   assert.match(source, /className="registration-result registration-result-ready"/);
+  assert.match(source, /error instanceof Error[\s\S]*error\.message/);
 });
