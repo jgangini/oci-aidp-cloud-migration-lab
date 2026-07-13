@@ -42,23 +42,8 @@ class Identity:
     def list_availability_domains(self, _tenancy_id: str) -> Any:
         return SimpleNamespace(data=[SimpleNamespace(name="AD-1")])
 
-    def list_domains(self, **_kwargs: Any) -> Any:
-        return SimpleNamespace(data=[SimpleNamespace(url="https://identity.example", lifecycle_state="ACTIVE")])
-
     def list_compartments(self, **_kwargs: Any) -> Any:
         return SimpleNamespace(data=[], headers={})
-
-
-class IdentityDomains:
-    def __init__(self, signing_cert_public_access: bool = True) -> None:
-        self.signing_cert_public_access = signing_cert_public_access
-
-    def list_settings(self, **_kwargs: Any) -> Any:
-        return SimpleNamespace(
-            data=SimpleNamespace(
-                resources=[SimpleNamespace(signing_cert_public_access=self.signing_cert_public_access)]
-            )
-        )
 
 
 class Compute:
@@ -107,7 +92,6 @@ def _select(
         {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
         identity_factory=lambda _config: identity,
         compute_factory=lambda _config: compute,
-        identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
         aidp_factory=lambda _config: aidp,
     )
     return result, compute
@@ -127,9 +111,6 @@ def test_preflight_selects_e5_and_discovers_home_region() -> None:
     assert [item.instance_shape for item in compute.details.shape_availabilities] == list(preflight.SUPPORTED_SHAPES)
     assert compute.details.shape_availabilities[0].instance_shape_config.ocpus == 2
     assert compute.details.shape_availabilities[0].instance_shape_config.memory_in_gbs == 16
-    assert any(event["name"] == "Identity Domain signing certificate access" for event in result["events"])
-
-
 def test_preflight_rejects_occupied_new_compartment_across_pages() -> None:
     class PagedIdentity(Identity):
         def list_compartments(self, **kwargs: Any) -> Any:
@@ -195,41 +176,6 @@ def test_preflight_reports_selected_new_name_is_available() -> None:
     assert event["message"] == "custom.lab_2026 is available to create"
 
 
-def test_preflight_requires_public_identity_domain_signing_certificate() -> None:
-    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
-    with pytest.raises(RuntimeError, match="Access Signing Certificate"):
-        preflight.select_inputs(
-            {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
-            {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
-            identity_factory=lambda _config: Identity(),
-            compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
-            identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(False),
-            aidp_factory=lambda _config: Aidp(),
-        )
-
-
-def test_preflight_finds_default_domain_by_stable_type() -> None:
-    filters: dict[str, Any] = {}
-
-    class RecordingIdentity(Identity):
-        def list_domains(self, **kwargs: Any) -> Any:
-            filters.update(kwargs)
-            return super().list_domains(**kwargs)
-
-    available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
-    preflight.select_inputs(
-        {"region": "us-chicago-1", "compartment": "aidp-lab", "compartment_mode": "new", "inputs": {}},
-        {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
-        identity_factory=lambda _config: RecordingIdentity(),
-        compute_factory=lambda _config: Compute({preflight.E5_SHAPE: (available, "1")}),
-        identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
-        aidp_factory=lambda _config: Aidp(),
-    )
-
-    assert filters["type"] == "DEFAULT"
-    assert "display_name" not in filters
-
-
 def test_preflight_accepts_available_status_without_a_count() -> None:
     available = preflight.oci.core.models.CapacityReportShapeAvailability.AVAILABILITY_STATUS_AVAILABLE
     result, _ = _select({preflight.E5_SHAPE: (available, None)})
@@ -293,7 +239,6 @@ def test_preflight_checks_all_availability_domains_for_standard_shape() -> None:
         {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
         identity_factory=lambda _config: MultiAdIdentity(),
         compute_factory=lambda _config: MultiAdCompute(),
-        identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
         aidp_factory=lambda _config: Aidp(),
     )
     assert result["inputs"]["availability_domain_index"] == 1
@@ -334,7 +279,6 @@ def test_preflight_accepts_any_available_fault_domain() -> None:
         {"tenancy": "ocid1.tenancy.oc1..test", "user": "ocid1.user.oc1..operator", "region": "us-chicago-1"},
         identity_factory=lambda _config: Identity(),
         compute_factory=lambda _config: FaultDomainCompute(),
-        identity_domains_factory=lambda *_args, **_kwargs: IdentityDomains(),
         aidp_factory=lambda _config: Aidp(),
     )
     assert result["inputs"]["preferred_vm_shape"] == preflight.E5_SHAPE
