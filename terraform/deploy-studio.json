@@ -66,7 +66,8 @@
         "max_length": 9,
         "transform": "uppercase_pbkdf2_sha256"
       }
-    ]
+    ],
+    "email_access_fields": ["admin_username", "admin_password", "registration_code"]
   },
   "outputs": [
     "application_url",

@@ -26,6 +26,7 @@ def test_deploy_studio_manifest_contract() -> None:
     assert fields["admin_password"]["transform"] == "pbkdf2_sha256"
     assert fields["registration_code"]["pattern"] == "^[A-Z]{4}-[0-9]{4}$"
     assert fields["registration_code"]["transform"] == "uppercase_pbkdf2_sha256"
+    assert manifest["form"]["email_access_fields"] == ["admin_username", "admin_password", "registration_code"]
     assert manifest["presentation"]["title"] == "OCI AI Data Platform Cloud Migration Lab"
     assert manifest["presentation"]["tags"] == ["VM", "VCN", "AI Data Platform", "Object Storage Bucket", "IAM Policies"]
     assert manifest["presentation"]["image"] == "/assets/oci-aidp-cloud-migration-lab.png"

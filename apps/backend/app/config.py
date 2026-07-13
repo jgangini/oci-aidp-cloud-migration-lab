@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .security import hash_secret
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -77,30 +79,65 @@ class Settings:
 
 
 class SettingsStore:
-    """Persists only administrator-editable, non-secret Workbench configuration."""
+    """Persists administrator-edited settings; registration codes remain PBKDF2 verifiers."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
+    def get_admin_settings(self) -> dict[str, str | bool]:
+        values = self._load()
+        return {
+            "aidp_url": values["aidp_workbench_url"],
+            "registration_code_configured": bool(values["registration_code_hash"]),
+        }
+
+    def get_registration_code_hash(self) -> str:
+        return self._load()["registration_code_hash"]
+
     def get_workbench_url(self) -> str:
+        return self._load()["aidp_workbench_url"]
+
+    def update(self, aidp_url: str | None, registration_code: str | None) -> dict[str, str | bool]:
+        if aidp_url is None and registration_code is None:
+            raise ValueError("Update the AI Data Platform URL or the lab registration code")
+        values = self._load()
+        if aidp_url is not None:
+            normalized = aidp_url.strip()
+            if not _valid_workbench_url(normalized):
+                raise ValueError("Enter a valid HTTPS Oracle AI Data Platform Workbench URL")
+            values["aidp_workbench_url"] = normalized
+        if registration_code is not None:
+            values["registration_code_hash"] = hash_secret(registration_code)
+        self._write(values)
+        return self.get_admin_settings()
+
+    def _load(self) -> dict[str, str]:
+        values = {
+            "aidp_workbench_url": self._settings.aidp_workbench_url
+            if _valid_workbench_url(self._settings.aidp_workbench_url)
+            else "",
+            "registration_code_hash": self._settings.registration_code_hash,
+        }
         path = Path(self._settings.aidp_settings_file)
         if path.is_file():
             try:
-                value = json.loads(path.read_text(encoding="utf-8")).get("aidp_workbench_url", "")
-                if isinstance(value, str) and _valid_workbench_url(value):
-                    return value
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                aidp_url = stored.get("aidp_workbench_url", "")
+                registration_code_hash = stored.get("registration_code_hash", "")
+                if isinstance(aidp_url, str) and _valid_workbench_url(aidp_url):
+                    values["aidp_workbench_url"] = aidp_url
+                if isinstance(registration_code_hash, str) and registration_code_hash:
+                    values["registration_code_hash"] = registration_code_hash
             except (OSError, ValueError, TypeError):
                 pass
-        return self._settings.aidp_workbench_url if _valid_workbench_url(self._settings.aidp_workbench_url) else ""
 
-    def set_workbench_url(self, value: str) -> str:
-        normalized = value.strip()
-        if not _valid_workbench_url(normalized):
-            raise ValueError("Enter a valid HTTPS Oracle AI Data Platform Workbench URL")
+        return values
+
+    def _write(self, values: dict[str, str]) -> None:
         path = Path(self._settings.aidp_settings_file)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"aidp_workbench_url": normalized}) + "\n", encoding="utf-8")
+        temporary.write_text(json.dumps(values) + "\n", encoding="utf-8")
         try:
             temporary.chmod(0o600)
         except OSError:
@@ -110,7 +147,6 @@ class SettingsStore:
             path.chmod(0o600)
         except OSError:
             pass
-        return normalized
 
 
 def _valid_workbench_url(value: str) -> bool:

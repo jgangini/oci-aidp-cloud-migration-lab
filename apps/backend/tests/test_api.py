@@ -375,19 +375,38 @@ def test_admin_cookie_and_live_users(tmp_path: Path) -> None:
     assert "ocid" not in users.json()["users"][0]
     assert settings.status_code == 200
     assert settings.json()["aidp_url"].startswith("https://example.datalake.oci.oraclecloud.com")
+    assert settings.json()["registration_code_configured"] is True
+    assert "registration_code" not in settings.json()
 
 
-def test_admin_can_persist_only_a_valid_direct_workbench_url(tmp_path: Path) -> None:
+def test_admin_can_persist_settings_and_rotate_the_registration_code(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     client.post("/api/admin/login", json={"username": "lab-admin", "password": "long-admin-password"})
     invalid = client.put("/api/admin/settings", json={"aidp_url": "https://cloud.oracle.com/ai-data-platform/"})
+    invalid_code = client.put("/api/admin/settings", json={"registration_code": "invalid"})
+    rotated = client.put("/api/admin/settings", json={"registration_code": "WXYZ-9876"})
     valid = client.put(
         "/api/admin/settings",
         json={"aidp_url": "https://demo.datalake.oci.oraclecloud.com#?tenant=test&domain=Default"},
     )
     assert invalid.status_code == 422
+    assert invalid_code.status_code == 422
+    assert rotated.status_code == 200
     assert valid.status_code == 200
     assert client.get("/api/admin/settings").json() == valid.json()
+    assert valid.json()["registration_code_configured"] is True
+    assert "registration_code" not in valid.json()
+
+    old_code = client.post(
+        "/api/register",
+        json={"name": "Ada Lovelace", "email": "ada@example.com", "industry": "banking", "code": "ABCD-1234"},
+    )
+    new_code = client.post(
+        "/api/register",
+        json={"name": "Grace Hopper", "email": "grace@example.com", "industry": "banking", "code": "WXYZ-9876"},
+    )
+    assert old_code.status_code == 422
+    assert new_code.status_code == 201
 
     unexpected = client.put(
         "/api/admin/settings",

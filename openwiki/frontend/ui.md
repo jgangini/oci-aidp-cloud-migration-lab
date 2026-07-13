@@ -23,6 +23,7 @@ After login, the admin area provides:
 - an Industry column and an AIDP reset action with a replacement-industry selector
 - a delete confirmation flow
 - links to the AIDP console when available
+- a Settings field that reports whether the lab registration code is configured and safely rotates it without displaying its prior value
 - sign-out and session-management actions
 
 The browser tests in [`apps/frontend/tests/security.test.mjs`](../apps/frontend/tests/security.test.mjs) are security-oriented source checks that prevent accidental regressions such as storing secrets in browser storage or changing password input semantics.

@@ -69,6 +69,15 @@ test("administrator UI manages lab users through protected API routes", () => {
   assert.match(source, /className="confirm-error"/);
 });
 
+test("settings can rotate the registration code without exposing or persisting it", () => {
+  assert.match(source, /Lab registration code/);
+  assert.match(source, /registration_code_configured/);
+  assert.match(source, /registration_code: registrationCode/);
+  assert.match(source, /Configured — enter a new code to replace it/);
+  assert.match(source, /aria-label="Lab registration code"/);
+  assert.doesNotMatch(source, /(?:localStorage|sessionStorage).*registrationCode/);
+});
+
 test("administrator can reset only a participant AIDP environment", () => {
   assert.match(source, /<th>Industry<\/th>/);
   assert.match(source, /industryLabel\(user\.industry\)/);

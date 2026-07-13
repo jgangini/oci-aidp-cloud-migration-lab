@@ -1393,12 +1393,17 @@ function AdminUsers() {
 
 function AdminSettings() {
   const [aidpUrl, setAidpUrl] = useState("");
+  const [registrationCode, setRegistrationCode] = useState("");
+  const [registrationCodeConfigured, setRegistrationCodeConfigured] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const urlRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    void api<{ aidp_url: string }>("/api/admin/settings")
-      .then((result) => setAidpUrl(result.aidp_url))
+    void api<{ aidp_url: string; registration_code_configured: boolean }>("/api/admin/settings")
+      .then((result) => {
+        setAidpUrl(result.aidp_url);
+        setRegistrationCodeConfigured(result.registration_code_configured);
+      })
       .catch((reason) => {
         if (reason instanceof ApiRequestError && reason.status === 401)
           window.location.assign("/admin/login");
@@ -1427,15 +1432,21 @@ function AdminSettings() {
     }
     setToast("AI Data Platform URL copied.");
   }
-  async function saveAidpUrl() {
+  async function saveSettings() {
     setError("");
+    const rotatesRegistrationCode = Boolean(registrationCode);
     try {
-      const result = await api<{ aidp_url: string }>("/api/admin/settings", {
+      const result = await api<{ aidp_url: string; registration_code_configured: boolean }>("/api/admin/settings", {
         method: "PUT",
-        body: JSON.stringify({ aidp_url: aidpUrl }),
+        body: JSON.stringify({
+          ...(aidpUrl ? { aidp_url: aidpUrl } : {}),
+          ...(rotatesRegistrationCode ? { registration_code: registrationCode } : {}),
+        }),
       });
       setAidpUrl(result.aidp_url);
-      setToast("AI Data Platform URL saved.");
+      setRegistrationCode("");
+      setRegistrationCodeConfigured(result.registration_code_configured);
+      setToast(rotatesRegistrationCode ? "Lab settings saved. Registration code updated." : "AI Data Platform URL saved.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to save settings");
     }
@@ -1492,8 +1503,28 @@ function AdminSettings() {
               </a>
             )}
           </label>
-          <button type="button" className="settings-save" onClick={() => void saveAidpUrl()}>
-            Save URL
+          <label className="settings-field">
+            Lab registration code
+            <input
+              type="text"
+              value={registrationCode}
+              onChange={(event) => setRegistrationCode(event.target.value.toUpperCase())}
+              aria-describedby="registration-code-settings-help"
+              aria-label="Lab registration code"
+              placeholder={registrationCodeConfigured ? "Configured — enter a new code to replace it" : "AAAA-0000"}
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              maxLength={9}
+            />
+            <span id="registration-code-settings-help" className="settings-help">
+              {registrationCodeConfigured
+                ? "For security, the current code is not displayed. Enter a new AAAA-0000 code to replace it."
+                : "Enter an AAAA-0000 code to enable participant registration."}
+            </span>
+          </label>
+          <button type="button" className="settings-save" onClick={() => void saveSettings()}>
+            Save settings
           </button>
           {error && (
             <p className="notice error" role="alert">

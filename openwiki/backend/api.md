@@ -22,7 +22,8 @@ Administrator access is protected by the `__Host-aidp_lab_admin` cookie and the 
 - `POST /api/admin/login` — verifies admin credentials and issues the session cookie
 - `POST /api/admin/logout` — clears the cookie
 - `GET /api/admin/session` — returns the logged-in admin username
-- `GET /api/admin/settings` — exposes the AIDP console URL for the UI
+- `GET /api/admin/settings` — exposes the AIDP console URL and whether a lab registration code is configured; it never returns the code
+- `PUT /api/admin/settings` — updates the AIDP console URL and can rotate the registration code; the replacement is persisted only as a PBKDF2 hash
 - `GET /api/admin/users` — lists lab users
 - `POST /api/admin/users` — creates a lab user from the admin UI
 - `POST /api/admin/users/{user_id}/reset` — idempotently removes and reinstalls only the participant's AIDP environment, optionally changing industry while preserving OCI Identity

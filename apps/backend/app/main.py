@@ -91,7 +91,18 @@ class AdminResetRequest(BaseModel):
 
 class SettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    aidp_url: str = Field(min_length=1, max_length=2_048)
+    aidp_url: str | None = Field(default=None, min_length=1, max_length=2_048)
+    registration_code: str | None = Field(default=None, min_length=1, max_length=9)
+
+    @field_validator("registration_code")
+    @classmethod
+    def clean_registration_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().upper()
+        if not CODE_PATTERN.fullmatch(value):
+            raise ValueError("Code must match AAAA-0000")
+        return value
 
 
 class LoginRequest(BaseModel):
@@ -175,7 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return forwarded or (request.client.host if request.client else "unknown")
 
     def require_identity() -> None:
-        if not settings.identity_ready() or not settings.registration_code_hash:
+        if not settings.identity_ready() or not app.state.settings_store.get_registration_code_hash():
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Registration is not configured")
 
     def require_registration_ready() -> None:
@@ -295,7 +306,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Too many invalid registration codes",
                 headers={"Retry-After": str(invalid_retry_after)},
             )
-        if not verify_secret(payload.code, settings.registration_code_hash):
+        if not verify_secret(payload.code, app.state.settings_store.get_registration_code_hash()):
             invalid_retry_after = app.state.invalid_code_limiter.consume(source_ip)
             if invalid_retry_after:
                 raise HTTPException(
@@ -345,13 +356,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"username": username}
 
     @app.get("/api/admin/settings")
-    async def admin_settings(_admin: str = Depends(require_admin)) -> dict[str, str]:
-        return {"aidp_url": app.state.settings_store.get_workbench_url()}
+    async def admin_settings(_admin: str = Depends(require_admin)) -> dict[str, str | bool]:
+        return app.state.settings_store.get_admin_settings()
 
     @app.put("/api/admin/settings")
-    async def update_admin_settings(payload: SettingsRequest, _admin: str = Depends(require_admin)) -> dict[str, str]:
+    async def update_admin_settings(payload: SettingsRequest, _admin: str = Depends(require_admin)) -> dict[str, str | bool]:
         try:
-            return {"aidp_url": app.state.settings_store.set_workbench_url(payload.aidp_url)}
+            return app.state.settings_store.update(payload.aidp_url, payload.registration_code)
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
