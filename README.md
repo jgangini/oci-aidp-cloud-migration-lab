@@ -2,7 +2,7 @@
 
 An end-to-end Oracle Cloud Infrastructure laboratory for learning data engineering with Oracle AI Data Platform (AIDP). It deploys an AIDP platform and shared workspace, shared Spark compute, a governed Oracle-managed Object Storage data plane, and a self-service registration application.
 
-Release v1.0.3 keeps one private `aidp-data-<suffix>` bucket with `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/` prefixes. Notebooks address these locations with OCI URIs and external tables; the package creates neither external AIDP volumes nor an explicit OSCS/OpenSearch resource. The workspace uses the participant email as the visible folder name, while an opaque key still scopes jobs, Object Storage paths, and table names.
+Release v1.0.4 keeps one private `aidp-data-<suffix>` bucket with `01_landing/`, `02_bronze/`, `03_silver/`, and `04_gold/` prefixes. Notebooks address these locations with OCI URIs and external tables; the package creates neither external AIDP volumes nor an explicit OSCS/OpenSearch resource. The workspace uses the participant email as the visible folder name, while an opaque key still scopes jobs, Object Storage paths, and table names.
 
 The active industry, exact workspace path, reconciliation phase, and idempotent administrator reset journal live in `/Workspace/medallon/.control/<participant>.json`, outside each participant's `ADMIN` subtree. The visible `lab-manifest.json` is tutorial metadata only; neither it nor the student-writable bucket controls authorization, overwrite behavior, or cleanup scope.
 
@@ -45,7 +45,7 @@ Registration first creates or reconciles the Identity Domains user in the pendin
 - The VM decrypts the envelope locally, verifies that the profile user matches the preflight operator OCID and that `key.pem` matches the configured fingerprint, writes both files atomically with mode `0600`, then deletes the Object Storage object and verifies its absence. The temporary bootstrap key is removed afterward.
 - Participant and developer access is granted through AIDP RBAC. Post-apply verifies that the deployment operator is a direct member of built-in `AI_DATA_PLATFORM_ADMIN`; it never creates `AIDP_LAB_PROVISIONER`.
 - The runtime signs both Identity Domains and AIDP requests with the installed operator profile selected by `OCI_CONFIG_FILE`. Instance principals can access only the exact one-use bootstrap object and are not a runtime authentication fallback. The VM `.env` contains identifiers and PBKDF2 hashes, but no private key, OAuth secret, or plaintext administrator credential.
-- The v1.0.3 path has no explicit OSCS/OpenSearch deployment and no external AIDP volumes.
+- The v1.0.4 path has no explicit OSCS/OpenSearch deployment and no external AIDP volumes.
 - The lab does not require the Default Identity Domain's **Access Signing Certificate** setting and does not request public JWK access; that setting remains a tenant security-policy decision.
 - OCI Provider 8.21 does not expose `force_destroy`; its native delete refuses a non-empty data bucket, preventing automatic lab-data deletion.
 - The HTTPS certificate is self-signed and includes the public IP/FQDN as SANs, so browsers will show a trust warning.
@@ -95,7 +95,7 @@ terraform init -backend=false
 terraform validate
 ```
 
-The v1.0.3 preflight accepts only the trusted repository and immutable release SHA in `us-chicago-1`, while keeping the compartment name as the editable Deploy Studio input. Names follow OCI's 1-100 character alphanumeric, period, hyphen, and underscore contract. In `new` mode validation confirms that the exact name is available to create; in `existing` mode it confirms one unambiguous ACTIVE compartment. It also rejects forbidden infrastructure and policies, rejects conflicting AIDP work requests for the selected name, and checks current VM capacity. For a saved Terraform plan, run `python terraform/release_gate.py --plan-json <plan.json>`; it fails unless every managed resource action is create-only.
+The v1.0.4 preflight accepts only the trusted repository and immutable release SHA in `us-chicago-1`, while keeping the compartment name as the editable Deploy Studio input. Names follow OCI's 1-100 character alphanumeric, period, hyphen, and underscore contract. In `new` mode validation confirms that the exact name is available to create; in `existing` mode it confirms one unambiguous ACTIVE compartment. It also rejects forbidden infrastructure and policies, rejects conflicting AIDP work requests for the selected name, and checks current VM capacity. For a saved Terraform plan, run `python terraform/release_gate.py --plan-json <plan.json>`; it fails unless every managed resource action is create-only.
 
 Deploy Studio manifest v1 currently has no hook between Resource Manager PLAN and its automatic APPLY, and it does not pass the plan JSON to repository preflight. Therefore the create-only plan check is available for manual/CI validation but cannot be enforced by this repository inside the current CloudTechNext PLAN/APPLY sequence. Do not start a lab APPLY until that explicit plan check has passed or CloudTechNext adds a post-plan/pre-apply hook.
 
