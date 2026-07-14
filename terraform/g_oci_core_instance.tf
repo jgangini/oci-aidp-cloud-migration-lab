@@ -19,11 +19,48 @@ data "oci_core_images" "oracle_linux" {
   sort_order               = "DESC"
 }
 
+resource "oci_identity_tag_namespace" "vm_bootstrap" {
+  provider       = oci.home
+  compartment_id = var.tenancy_ocid
+  name           = "ctn_aidp_lab_${local.suffix}"
+  description    = "Deployment-scoped tags for the OCI AIDP lab bootstrap"
+}
+
+resource "oci_identity_tag" "vm_bootstrap" {
+  provider         = oci.home
+  tag_namespace_id = oci_identity_tag_namespace.vm_bootstrap.id
+  name             = "run_command"
+  description      = "Identifies the single VM allowed to consume bootstrap commands"
+}
+
+resource "oci_identity_dynamic_group" "vm" {
+  provider       = oci.home
+  compartment_id = var.tenancy_ocid
+  name           = "${local.name_prefix}-vm"
+  description    = "Instance principal for the AIDP lab registration VM"
+  matching_rule  = "ALL {instance.compartment.id = '${local.target_compartment}', tag.${oci_identity_tag_namespace.vm_bootstrap.name}.${oci_identity_tag.vm_bootstrap.name}.value = '${local.suffix}'}"
+}
+
+resource "oci_identity_policy" "vm_bootstrap" {
+  provider       = oci.home
+  compartment_id = var.tenancy_ocid
+  name           = "${local.name_prefix}-vm-bootstrap"
+  description    = "Allow the tagged lab VM to receive commands and consume its one-use bootstrap object"
+  statements = [
+    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id",
+    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to manage objects in compartment id ${local.target_compartment} where all {target.bucket.name = '${oci_objectstorage_bucket.data.name}', target.object.name = '.bootstrap/operator-credentials.json'}"
+  ]
+}
+
 resource "oci_core_instance" "lab" {
   compartment_id      = local.target_compartment
   availability_domain = local.availability_domain
   display_name        = "${local.name_prefix}-vm"
   shape               = var.preferred_vm_shape
+
+  defined_tags = {
+    "${oci_identity_tag_namespace.vm_bootstrap.name}.${oci_identity_tag.vm_bootstrap.name}" = local.suffix
+  }
 
   shape_config {
     ocpus         = var._oci_instance.shape.ocpus
@@ -74,6 +111,8 @@ resource "oci_core_instance" "lab" {
 
   preserve_boot_volume = false
 
+  depends_on = [oci_identity_policy.vm_bootstrap]
+
   lifecycle {
     replace_triggered_by = [terraform_data.vm_release]
 
@@ -88,23 +127,13 @@ resource "oci_core_instance" "lab" {
   }
 }
 
-resource "oci_identity_dynamic_group" "vm" {
-  provider       = oci.home
-  compartment_id = var.tenancy_ocid
-  name           = "${local.name_prefix}-vm"
-  description    = "Instance principal for the AIDP lab registration VM"
-  matching_rule  = "ALL {instance.id = '${oci_core_instance.lab.id}'}"
-}
-
 resource "oci_identity_policy" "vm_run_command" {
   provider       = oci.home
   compartment_id = var.tenancy_ocid
   name           = "${local.name_prefix}-vm-run-command"
   description    = "Allow the deployment operator to run commands only on the lab VM"
   statements = [
-    "Allow group Administrators to manage instance-agent-command-family in compartment id ${local.target_compartment} where target.instance.id = '${oci_core_instance.lab.id}'",
-    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to use instance-agent-command-execution-family in compartment id ${local.target_compartment} where request.instance.id=target.instance.id",
-    "Allow dynamic-group ${oci_identity_dynamic_group.vm.name} to manage objects in compartment id ${local.target_compartment} where all {target.bucket.name = '${oci_objectstorage_bucket.data.name}', target.object.name = '.bootstrap/operator-credentials.json'}"
+    "Allow group Administrators to manage instance-agent-command-family in compartment id ${local.target_compartment} where target.instance.id = '${oci_core_instance.lab.id}'"
   ]
 }
 

@@ -157,7 +157,7 @@ run "resolved_compartment_contract" {
 
   assert {
     condition = anytrue([
-      for statement in oci_identity_policy.vm_run_command.statements :
+      for statement in oci_identity_policy.vm_bootstrap.statements :
       strcontains(statement, "Allow dynamic-group aidp-lab-test1234-vm to use instance-agent-command-execution-family") &&
       strcontains(statement, "use instance-agent-command-execution-family") &&
       strcontains(statement, "compartment id ocid1.compartment.oc1..test") &&
@@ -167,13 +167,29 @@ run "resolved_compartment_contract" {
   }
 
   assert {
-    condition = length(oci_identity_policy.vm_run_command.statements) == 3 && anytrue([
-      for statement in oci_identity_policy.vm_run_command.statements :
+    condition = length(oci_identity_policy.vm_bootstrap.statements) == 2 && anytrue([
+      for statement in oci_identity_policy.vm_bootstrap.statements :
       strcontains(statement, "manage objects") &&
       strcontains(statement, "target.bucket.name = 'aidp-data-test1234'") &&
       strcontains(statement, "target.object.name = '.bootstrap/operator-credentials.json'")
     ])
     error_message = "The registration VM needs exact-object access to consume encrypted credentials."
+  }
+
+  assert {
+    condition = (
+      oci_identity_dynamic_group.vm.matching_rule ==
+      "ALL {instance.compartment.id = 'ocid1.compartment.oc1..test', tag.ctn_aidp_lab_test1234.run_command.value = 'test1234'}"
+    )
+    error_message = "The VM dynamic group must exist before launch and match only the deployment-scoped defined tag."
+  }
+
+  assert {
+    condition = (
+      oci_core_instance.lab.defined_tags["ctn_aidp_lab_test1234.run_command"] == "test1234" &&
+      length(oci_identity_policy.vm_run_command.statements) == 1
+    )
+    error_message = "The tagged VM must retain a separate operator policy scoped to its concrete instance OCID."
   }
 
   assert {

@@ -200,6 +200,7 @@ def test_runtime_security_contracts() -> None:
     assert "prevent_destroy" not in storage
     assert "manage datalake" not in compute
     assert "manage ai-data-platforms" not in compute
+    assert 'resource "oci_identity_policy" "vm_bootstrap"' in compute
     assert 'resource "oci_identity_policy" "vm_run_command"' in compute
     assert "manage instance-agent-command-family" in compute
     assert "use instance-agent-command-execution-family" in compute

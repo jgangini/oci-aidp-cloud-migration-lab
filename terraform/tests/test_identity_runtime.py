@@ -72,6 +72,21 @@ def test_run_command_returns_only_public_material_or_the_ready_sentinel() -> Non
     assert "ocarun ALL=(root) NOPASSWD: /usr/local/sbin/aidp-lab-bootstrap-public-key" in cloud_init
 
 
+def test_vm_bootstrap_identity_is_authorized_before_instance_launch() -> None:
+    compute = (ROOT / "terraform/g_oci_core_instance.tf").read_text(encoding="utf-8")
+
+    dynamic_group = _resource(compute, "oci_identity_dynamic_group", "vm")
+    bootstrap_policy = _resource(compute, "oci_identity_policy", "vm_bootstrap")
+    instance = _resource(compute, "oci_core_instance", "lab")
+    assert "oci_core_instance.lab.id" not in dynamic_group
+    assert "instance.compartment.id" in dynamic_group
+    assert "tag.${oci_identity_tag_namespace.vm_bootstrap.name}.${oci_identity_tag.vm_bootstrap.name}.value" in dynamic_group
+    assert "use instance-agent-command-execution-family" in bootstrap_policy
+    assert "target.object.name = '.bootstrap/operator-credentials.json'" in bootstrap_policy
+    assert 'depends_on = [oci_identity_policy.vm_bootstrap]' in instance
+    assert '"${oci_identity_tag_namespace.vm_bootstrap.name}.${oci_identity_tag.vm_bootstrap.name}" = local.suffix' in instance
+
+
 def test_required_aidp_policy_has_no_optional_or_search_resources() -> None:
     aidp = (ROOT / "terraform/i_oci_ai_data_platform.tf").read_text(encoding="utf-8")
 
