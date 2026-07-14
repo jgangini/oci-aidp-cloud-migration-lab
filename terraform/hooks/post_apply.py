@@ -491,25 +491,9 @@ def build_signer(config: dict[str, Any]) -> Any:
     )
 
 
-def ensure_object_prefixes(client: Any, namespace: str, bucket: str) -> list[str]:
-    import oci
-
-    events: list[str] = []
-    for index, layer in enumerate(LAYERS, start=1):
-        name = f"{index:02d}_{layer}/"
-        try:
-            client.head_object(namespace, bucket, name)
-            created = False
-        except oci.exceptions.ServiceError as exc:
-            if exc.status != 404:
-                raise ReconcileError(f"Object Storage prefix check failed with {exc.status}: {name}") from exc
-            try:
-                client.put_object(namespace, bucket, name, b"", content_type="application/x-directory")
-            except oci.exceptions.ServiceError as put_exc:
-                raise ReconcileError(f"Object Storage prefix creation failed with {put_exc.status}: {name}") from put_exc
-            created = True
-        events.append(f"Object Storage prefix {name} {'created' if created else 'reused'}")
-    return events
+def describe_object_prefixes() -> list[str]:
+    # ponytail: OCI prefixes are virtual; real workload objects create them on first write.
+    return [f"Object Storage prefix {index:02d}_{layer}/ is virtual" for index, layer in enumerate(LAYERS, start=1)]
 
 
 def workspace_object(api: AidpApi, workspace_key: str, path: str) -> ApiResponse | None:
@@ -1180,9 +1164,7 @@ def main() -> int:
         import oci
 
         object_storage = oci.object_storage.ObjectStorageClient(oci_config, signer=signer)
-        messages = ensure_object_prefixes(
-            object_storage, str(outputs["objectstorage_namespace"]), str(outputs["bucket_name"])
-        )
+        messages = describe_object_prefixes()
         api = AidpApi(context["region"], outputs["ai_data_platform_id"], signer, context["deployment_id"])
         reconciled, reconcile_messages = reconcile(api, outputs)
         messages.extend(reconcile_messages)

@@ -47,7 +47,7 @@ Registration first creates or reconciles the Identity Domains user in the pendin
 - The runtime signs both Identity Domains and AIDP requests with the installed operator profile selected by `OCI_CONFIG_FILE`. Instance principals can access only the exact one-use bootstrap object and are not a runtime authentication fallback. The VM `.env` contains identifiers and PBKDF2 hashes, but no private key, OAuth secret, or plaintext administrator credential.
 - The v1.0.0 path has no explicit OSCS/OpenSearch deployment and no external AIDP volumes.
 - The lab does not require the Default Identity Domain's **Access Signing Certificate** setting and does not request public JWK access; that setting remains a tenant security-policy decision.
-- OCI Provider 8.21 does not expose `force_destroy`; its native delete refuses a non-empty data bucket, preventing automatic lab-data deletion.
+- OCI Provider 8.21 does not expose `force_destroy`; its native delete refuses a non-empty data bucket. The medallion prefixes therefore stay virtual until the first workload write, while real lab data must be emptied before destroying the stack.
 - The HTTPS certificate is self-signed and includes the public IP/FQDN as SANs, so browsers will show a trust warning.
 - Tenancy-level IAM and Identity Domains resources use an OCI provider alias pinned to the tenancy home region; regional AIDP, Compute, Networking, and Object Storage resources continue to use the deployment region.
 

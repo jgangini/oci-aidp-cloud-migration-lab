@@ -284,26 +284,13 @@ def test_fresh_only_rejects_global_medallion_schema_without_deleting() -> None:
     assert not any(method == "DELETE" for method, _, _, _ in api.calls)
 
 
-def test_object_prefixes_are_created_only_when_missing() -> None:
-    class Client:
-        def __init__(self) -> None:
-            self.objects = {"02_bronze/"}
-
-        def head_object(self, namespace, bucket, name):
-            if name not in self.objects:
-                import oci
-
-                raise oci.exceptions.ServiceError(404, "NotFound", {}, "missing")
-
-        def put_object(self, namespace, bucket, name, body, *, content_type):
-            assert body == b""
-            assert content_type == "application/x-directory"
-            self.objects.add(name)
-
-    client = Client()
-    events = post_apply.ensure_object_prefixes(client, "namespace", "bucket")
-    assert client.objects == {"01_landing/", "02_bronze/", "03_silver/", "04_gold/"}
-    assert "Object Storage prefix 02_bronze/ reused" in events
+def test_object_prefixes_remain_virtual_until_first_workload_write() -> None:
+    assert post_apply.describe_object_prefixes() == [
+        "Object Storage prefix 01_landing/ is virtual",
+        "Object Storage prefix 02_bronze/ is virtual",
+        "Object Storage prefix 03_silver/ is virtual",
+        "Object Storage prefix 04_gold/ is virtual",
+    ]
 
 
 def test_existing_incompatible_catalog_is_never_replaced() -> None:
